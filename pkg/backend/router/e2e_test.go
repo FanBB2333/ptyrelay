@@ -26,6 +26,9 @@ import (
 // This is the "does v0.2.0 actually work" smoke test. If it fails
 // after a refactor, the integration is broken.
 func TestE2E_FullStack(t *testing.T) {
+	if testing.Short() {
+		t.Skip("e2e: skipping multi-MB PTY upload integration test under -short")
+	}
 	t.Parallel()
 
 	// --- Stage 1: build the agent for the host platform.
@@ -45,8 +48,9 @@ func TestE2E_FullStack(t *testing.T) {
 	sb := shell.New(sess)
 
 	// Generous timeout — uploading a multi-MB binary through the PTY
-	// in 32 KiB framed chunks is slow under -race.
-	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
+	// in 32 KiB framed chunks is slow under -race, especially when the
+	// bootstrap suite is running its own upload in parallel.
+	ctx, cancel := context.WithTimeout(context.Background(), 360*time.Second)
 	defer cancel()
 
 	// --- Stage 3: bootstrap the agent through the shell.

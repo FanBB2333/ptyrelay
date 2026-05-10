@@ -56,8 +56,9 @@ func TestBootstrap_EndToEnd(t *testing.T) {
 	sb := shell.New(sess)
 
 	// Generous timeout — uploading a multi-MB binary through the PTY
-	// in 32 KiB framed chunks is slow under -race.
-	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
+	// in 32 KiB framed chunks is slow under -race (typically ~14×
+	// non-race wallclock when other PTY-bound tests are also live).
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
 	defer cancel()
 
 	installDir := t.TempDir()
