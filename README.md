@@ -8,11 +8,18 @@ session 变成一个结构化的远端能力面：文件读写、命令执行。
 
 ## Status
 
-**v0.1.0 — Shell-only MVP.** 只用 POSIX shell 命令拼出全部远端能力，
-不需要在远端预装任何东西。性能不算好（每个 op 都是一次 shell 往返），
-但抽象边界已经成型，准备在 v0.2.0 加上长寿 agent 进程把延迟降到
-毫秒级。详见 [TODOs.md](TODOs.md) 的发布节奏与
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) 的分层设计。
+**v0.2.0 — Agent + Router.** 既有 ShellBackend（什么都不预装就能跑），也有
+AgentBackend（远端跑一个 Go 二进制走 JSON RPC，binary-safe、stderr
+独立、错误分类）。RouterBackend 按 op 幂等性自动选路：
+agent 健康时走 RPC，agent 缺失或 ReadOnly/Idempotent 失败时透明回落
+到 shell；NonIdempotent 失败上抛由调用方决策。Bootstrap 会自动把 agent
+二进制 atomic-write 到远端（sha256 校验 + 平台探测）。
+
+REPL 模式（agent 长寿进程，单 op 延迟 < 1ms）和 WebSocket transport
+留到 v0.3.0。详见 [TODOs.md](TODOs.md)、
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、
+[docs/PROTOCOL.md](docs/PROTOCOL.md)、
+[docs/SECURITY.md](docs/SECURITY.md)。
 
 ## Quickstart
 

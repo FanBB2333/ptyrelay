@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+### Added (v0.2.0)
+- `pkg/proto`: agent wire protocol (typed Request/Response, op constants,
+  ErrKind taxonomy, length-prefixed and line-delimited codecs).
+- `cmd/ptyrelay-agent`: remote binary supporting one-shot and REPL modes;
+  ops ping/read/write/stat/lstat/list/remove/rename/mkdir_all/run/bye.
+- `pkg/backend/agent`: AgentBackend over the one-shot transport, with
+  base64-staged requests to survive PTY MAX_INPUT.
+- `pkg/bootstrap`: agent install over ShellBackend (uname-based platform
+  probe, FileProvider/EmbedProvider, atomic write + sha256 verify).
+- `pkg/backend/router`: RouterBackend with idempotency-aware fallback
+  (ReadOnly/Idempotent silently retry through shell; NonIdempotent
+  surface errors to caller).
+- Docs: `docs/PROTOCOL.md` (canonical wire spec), `docs/SECURITY.md`
+  (threat model + mitigations).
+
+### Added (v0.1.0)
 - Project skeleton: directory layout, Go module, CI, lint, editorconfig.
 - Core interfaces (`Channel`, `Session`, `Backend`, `RemoteFS`, `RemoteExec`) with idempotency annotations.
 - Sentinel-framed `Session` with per-shell prelude (bash/zsh/dash) and a Ctrl-C → Ctrl-\ cancellation escalation.
