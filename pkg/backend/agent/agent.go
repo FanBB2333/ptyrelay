@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -32,11 +33,18 @@ import (
 type Backend struct {
 	sess      *session.FramedSession
 	agentPath string
+	mode      Mode
 
 	// Atomic counter used to generate per-request IDs. Helpful for
-	// debugging traces and required by the REPL transport (M5c) where
-	// responses can interleave.
+	// debugging traces and used by the REPL transport for response
+	// correlation sanity checks.
 	idCounter atomic.Uint64
+
+	// REPL-mode state. nil unless mode==ModeREPL and a request has
+	// been issued (lazy start). replInitMu guards the start handshake;
+	// the per-op call serialization lives inside replState.
+	replInitMu sync.Mutex
+	repl       *replState
 }
 
 // Option customizes a Backend at construction.
@@ -71,9 +79,15 @@ func (b *Backend) Probe(ctx context.Context) error {
 	return nil
 }
 
-// Close is a no-op for the one-shot transport — there's no long-lived
-// agent process to tear down. REPL mode (M5c) will override this.
-func (b *Backend) Close() error { return nil }
+// Close tears down the REPL agent (sending `bye`, waiting for exit,
+// releasing the Session lease). One-shot mode has no long-lived state
+// and Close is a no-op.
+func (b *Backend) Close() error {
+	if b.mode == ModeREPL {
+		return b.closeREPL()
+	}
+	return nil
+}
 
 // requestChunkSize bounds how many bytes of base64 we put on a single
 // shell command line when staging the request. macOS PTYs cap input at
@@ -83,11 +97,19 @@ func (b *Backend) Close() error { return nil }
 // per op but not correctness.
 const requestChunkSize = 512
 
-// callOp marshals args, stages the request on the remote via short
+// callOp dispatches based on the configured mode.
+func (b *Backend) callOp(ctx context.Context, op proto.Op, args, out any) error {
+	if b.mode == ModeREPL {
+		return b.callREPL(ctx, op, args, out)
+	}
+	return b.callOneShot(ctx, op, args, out)
+}
+
+// callOneShot marshals args, stages the request on the remote via short
 // `printf '%s' >> tmp` appends, then invokes the agent reading from
 // that tempfile. The detour around stdin via a tempfile is what makes
 // requests larger than ~1 KiB survive a macOS PTY hop.
-func (b *Backend) callOp(ctx context.Context, op proto.Op, args, out any) error {
+func (b *Backend) callOneShot(ctx context.Context, op proto.Op, args, out any) error {
 	id := strconv.FormatUint(b.idCounter.Add(1), 16)
 
 	var argsRaw json.RawMessage

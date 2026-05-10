@@ -314,24 +314,26 @@ func TestVersionMismatch(t *testing.T) {
 func TestREPL_PingThenBye(t *testing.T) {
 	t.Parallel()
 	var inBuf bytes.Buffer
-	if err := proto.WriteFrame(&inBuf, &proto.Request{V: 1, ID: "1", Op: proto.OpPing}); err != nil {
+	if err := proto.WriteOneShot(&inBuf, &proto.Request{V: 1, ID: "1", Op: proto.OpPing}); err != nil {
 		t.Fatal(err)
 	}
-	if err := proto.WriteFrame(&inBuf, &proto.Request{V: 1, ID: "2", Op: proto.OpBye}); err != nil {
+	if err := proto.WriteOneShot(&inBuf, &proto.Request{V: 1, ID: "2", Op: proto.OpBye}); err != nil {
 		t.Fatal(err)
 	}
 	var outBuf bytes.Buffer
 	if err := runREPL(&inBuf, &outBuf); err != nil {
 		t.Fatal(err)
 	}
+
+	dec := json.NewDecoder(&outBuf)
 	var resp proto.Response
-	if err := proto.ReadFrame(&outBuf, &resp); err != nil {
+	if err := dec.Decode(&resp); err != nil {
 		t.Fatal(err)
 	}
 	if !resp.OK || resp.ID != "1" {
 		t.Errorf("first resp: %+v", resp)
 	}
-	if err := proto.ReadFrame(&outBuf, &resp); err != nil {
+	if err := dec.Decode(&resp); err != nil {
 		t.Fatal(err)
 	}
 	if !resp.OK || resp.ID != "2" {

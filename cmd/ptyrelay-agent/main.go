@@ -13,6 +13,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -68,18 +69,24 @@ func runOneShot(in io.Reader, out io.Writer) error {
 }
 
 func runREPL(in io.Reader, out io.Writer) error {
+	// Line-delimited JSON over the PTY-friendly path. Length-prefixed
+	// framing (proto.WriteFrame / ReadFrame) is reserved for
+	// binary-safe transports (e.g. WebSocket) where 4-byte BE length
+	// headers don't risk hitting Ctrl-C / EOT byte values that a PTY
+	// line discipline would interpret.
+	dec := json.NewDecoder(in)
 	for {
 		var req proto.Request
-		if err := proto.ReadFrame(in, &req); err != nil {
+		if err := dec.Decode(&req); err != nil {
 			if errors.Is(err, io.EOF) {
-				return nil // clean exit on EOF
+				return nil
 			}
 			resp := errorResponse("", proto.ErrKindBadProto, err)
-			_ = proto.WriteFrame(out, resp)
+			_ = proto.WriteOneShot(out, resp)
 			return err
 		}
 		resp := dispatch(&req)
-		if err := proto.WriteFrame(out, resp); err != nil {
+		if err := proto.WriteOneShot(out, resp); err != nil {
 			return err
 		}
 		if req.Op == proto.OpBye {

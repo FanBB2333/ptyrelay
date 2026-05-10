@@ -23,7 +23,9 @@ func buildAgentForHost(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
 	out := filepath.Join(dir, runtime.GOOS+"-"+runtime.GOARCH)
-	cmd := exec.Command("go", "build", "-o", out, "./cmd/ptyrelay-agent")
+	// -s -w strips the symbol table; ~halves the test binary (3.4 MB → ~2 MB)
+	// which makes the chunked upload through the PTY noticeably faster.
+	cmd := exec.Command("go", "build", "-ldflags=-s -w", "-o", out, "./cmd/ptyrelay-agent")
 	cmd.Dir = repoRoot(t)
 	if buildOut, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("go build agent: %v\n%s", err, buildOut)
@@ -53,7 +55,9 @@ func TestBootstrap_EndToEnd(t *testing.T) {
 	defer sess.Close()
 	sb := shell.New(sess)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	// Generous timeout — uploading a multi-MB binary through the PTY
+	// in 32 KiB framed chunks is slow under -race.
+	ctx, cancel := context.WithTimeout(context.Background(), 180*time.Second)
 	defer cancel()
 
 	installDir := t.TempDir()

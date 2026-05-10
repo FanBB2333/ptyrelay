@@ -50,6 +50,12 @@ func (c *PTYChannel) Write(b []byte) (int, error) { return c.ptmx.Write(b) }
 func (c *PTYChannel) Resize(_ context.Context, _, _ uint16) error { return nil }
 
 // Caps implements channel.Channel.
+//
+// MaxWriteChunk = 4096 strikes a balance: large enough to keep
+// upload-heavy workloads (Bootstrap pushing a multi-MB binary) under
+// reasonable wallclock, small enough that the kernel routinely blocks
+// the master Write rather than letting the slave PTY drop bytes when
+// the input buffer fills.
 func (c *PTYChannel) Caps() channel.Caps {
 	return channel.Caps{
 		BinarySafe:    false,

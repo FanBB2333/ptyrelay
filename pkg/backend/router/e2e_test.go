@@ -31,7 +31,7 @@ func TestE2E_FullStack(t *testing.T) {
 	// --- Stage 1: build the agent for the host platform.
 	provDir := t.TempDir()
 	agentBuildPath := filepath.Join(provDir, runtime.GOOS+"-"+runtime.GOARCH)
-	build := exec.Command("go", "build", "-o", agentBuildPath, "./cmd/ptyrelay-agent")
+	build := exec.Command("go", "build", "-ldflags=-s -w", "-o", agentBuildPath, "./cmd/ptyrelay-agent")
 	build.Dir = repoRoot(t)
 	if out, err := build.CombinedOutput(); err != nil {
 		t.Fatalf("build agent: %v\n%s", err, out)
@@ -44,7 +44,9 @@ func TestE2E_FullStack(t *testing.T) {
 	defer sess.Close()
 	sb := shell.New(sess)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	// Generous timeout — uploading a multi-MB binary through the PTY
+	// in 32 KiB framed chunks is slow under -race.
+	ctx, cancel := context.WithTimeout(context.Background(), 240*time.Second)
 	defer cancel()
 
 	// --- Stage 3: bootstrap the agent through the shell.

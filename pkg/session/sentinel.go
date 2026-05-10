@@ -43,7 +43,8 @@ type parseState int
 
 const (
 	stateBeforeBEG parseState = iota
-	stateCapturing
+	stateCapturing                // RunFramed: buffer all output, deliver at end
+	stateStreaming                // Pipe: flush bytes to writer as they age out
 	stateReadingExitCode
 	stateDone
 )

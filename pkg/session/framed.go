@@ -59,6 +59,11 @@ type FramedSession struct {
 	readerCtx context.Context
 	stopRead  context.CancelFunc
 
+	// writeMu serializes channel writes across goroutines (writeAll,
+	// the cancel-chain helpers, and Pipe's stdin writer). Channel
+	// implementations do not have to be goroutine-safe themselves.
+	writeMu sync.Mutex
+
 	// nonceFn is overridable for tests; production uses crypto/rand.
 	nonceFn func() (string, error)
 }
@@ -164,12 +169,201 @@ func (s *FramedSession) RunFramed(ctx context.Context, cmd string, stdin []byte)
 	return s.runFramedLocked(ctx, cmd, stdin)
 }
 
-// Pipe implements [Session]. Streaming is a v0.2.0 feature (used by
-// AgentBackend in REPL mode); v0.1.0 returns a stub error so existing
-// callers fail loudly instead of hanging.
-func (s *FramedSession) Pipe(_ context.Context, _ string) (io.WriteCloser, io.ReadCloser, <-chan PipeResult, error) {
-	return nil, nil, nil, errors.New("session: Pipe not implemented in v0.1.0")
+// Pipe implements [Session]. The returned writer relays bytes verbatim
+// to the channel (it becomes the remote command's stdin); the returned
+// reader receives bytes flushed from the streaming parser (the remote
+// command's stdout, with the surrounding sentinel framing stripped).
+// The result channel fires exactly once after the command exits.
+//
+// Pipe takes an exclusive lease on the Session: every other RunFramed /
+// Pipe call blocks until the writer is closed and result has fired. The
+// lease is released by the background pump goroutine when it returns;
+// callers signal "I'm done" by closing the writer and (where the remote
+// supports it) sending a graceful-shutdown op like `bye` so the remote
+// command exits and the wrapper's END marker appears.
+//
+// Closing the writer is a no-op on the channel — the remote has no
+// out-of-band EOF signal. Callers MUST end their command's input
+// stream via an in-band protocol if they expect the remote to exit.
+func (s *FramedSession) Pipe(ctx context.Context, cmd string) (io.WriteCloser, io.ReadCloser, <-chan PipeResult, error) {
+	if s.dead.Load() {
+		return nil, nil, nil, ErrSessionDead
+	}
+
+	s.mu.Lock()
+	released := false
+	releaseOnEarlyError := func() {
+		if !released {
+			released = true
+			s.mu.Unlock()
+		}
+	}
+	defer releaseOnEarlyError()
+
+	if !s.preluded {
+		if err := s.runPreludeLocked(ctx); err != nil {
+			return nil, nil, nil, fmt.Errorf("prelude: %w", err)
+		}
+		s.preluded = true
+	}
+
+	nonce, err := s.nonceFn()
+	if err != nil {
+		return nil, nil, nil, fmt.Errorf("nonce: %w", err)
+	}
+	wrapped, err := wrapCommand(cmd, nil, nonce)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	if err := s.writeAll([]byte(wrapped)); err != nil {
+		return nil, nil, nil, fmt.Errorf("write command: %w", err)
+	}
+
+	stdoutR, stdoutW := io.Pipe()
+	parser := newStreamingParser(nonce, stdoutW)
+	resultCh := make(chan PipeResult, 1)
+
+	// Hand the lease to the pump goroutine; it releases s.mu when it
+	// returns.
+	released = true
+	go s.pipePump(ctx, parser, stdoutW, resultCh)
+
+	return &channelWriter{ch: s.ch, mu: &s.writeMu}, stdoutR, resultCh, nil
 }
+
+// pipePump reads from the session's shared reader, feeds the streaming
+// parser, and signals completion exactly once. It must be the sole
+// owner of s.mu for its entire lifetime.
+func (s *FramedSession) pipePump(ctx context.Context, parser *streamingParser, stdoutW *io.PipeWriter, resultCh chan<- PipeResult) {
+	defer s.mu.Unlock()
+	defer close(resultCh)
+
+	var (
+		ctxDone     = ctx.Done()
+		cancelStage int
+		phaseTimer  *time.Timer
+	)
+	armPhase := func(d time.Duration) {
+		if phaseTimer != nil {
+			phaseTimer.Stop()
+		}
+		phaseTimer = time.NewTimer(d)
+	}
+	defer func() {
+		if phaseTimer != nil {
+			phaseTimer.Stop()
+		}
+	}()
+
+	finalize := func(res PipeResult) {
+		_ = stdoutW.CloseWithError(res.Err)
+		resultCh <- res
+	}
+
+	for {
+		var phaseCh <-chan time.Time
+		if phaseTimer != nil {
+			phaseCh = phaseTimer.C
+		}
+
+		select {
+		case rr, ok := <-s.readCh:
+			if !ok {
+				s.dead.Store(true)
+				finalize(PipeResult{Err: channel.ErrChannelClosed})
+				return
+			}
+			if rr.err != nil {
+				s.dead.Store(true)
+				if errors.Is(rr.err, io.EOF) {
+					finalize(PipeResult{Err: fmt.Errorf("%w: %v", channel.ErrChannelClosed, rr.err)})
+					return
+				}
+				finalize(PipeResult{Err: fmt.Errorf("read: %w", rr.err)})
+				return
+			}
+			done, perr := parser.feed(rr.b)
+			if perr != nil {
+				finalize(PipeResult{Err: perr})
+				return
+			}
+			if done {
+				_ = stdoutW.Close()
+				res := PipeResult{ExitCode: parser.exitCode}
+				if cancelStage > 0 {
+					res.Err = fmt.Errorf("%w (output drained)", ErrCanceled)
+				}
+				resultCh <- res
+				return
+			}
+
+		case <-ctxDone:
+			ctxDone = nil
+			if cancelStage == 0 {
+				if _, werr := s.writeChannel([]byte{0x03}); werr != nil {
+					s.dead.Store(true)
+					finalize(PipeResult{Err: fmt.Errorf("send ^C: %w", werr)})
+					return
+				}
+				cancelStage = 1
+				armPhase(s.softCancelGrace)
+			}
+
+		case <-phaseCh:
+			switch cancelStage {
+			case 1:
+				if _, werr := s.writeChannel([]byte{0x1c}); werr != nil {
+					s.dead.Store(true)
+					finalize(PipeResult{Err: fmt.Errorf("send ^\\: %w", werr)})
+					return
+				}
+				cancelStage = 2
+				armPhase(s.hardCancelGrace)
+			case 2:
+				s.dead.Store(true)
+				finalize(PipeResult{Err: fmt.Errorf("%w: drain after ^\\ exceeded %s", ErrSessionDead, s.hardCancelGrace)})
+				return
+			}
+		}
+	}
+}
+
+// channelWriter exposes Channel.Write as an io.WriteCloser. Close is a
+// no-op (see Pipe's docstring on EOF).
+//
+// Write splits bytes at Caps.MaxWriteChunk so a large payload doesn't
+// overrun the slave PTY's input buffer (MAX_INPUT, ~1024 bytes on
+// macOS). With each sub-write small enough, the kernel routinely lets
+// the slave drain between calls.
+type channelWriter struct {
+	ch channel.Channel
+	mu *sync.Mutex
+}
+
+func (w *channelWriter) Write(b []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	chunk := w.ch.Caps().MaxWriteChunk
+	if chunk <= 0 || chunk >= len(b) {
+		return w.ch.Write(b)
+	}
+	written := 0
+	for off := 0; off < len(b); {
+		end := off + chunk
+		if end > len(b) {
+			end = len(b)
+		}
+		n, err := w.ch.Write(b[off:end])
+		written += n
+		if err != nil {
+			return written, err
+		}
+		off = end
+	}
+	return written, nil
+}
+
+func (w *channelWriter) Close() error { return nil }
 
 // Close implements [Session].
 func (s *FramedSession) Close() error {
@@ -218,13 +412,23 @@ func (s *FramedSession) runFramedLocked(ctx context.Context, cmd string, stdin [
 	return s.driveParser(ctx, parser)
 }
 
+// writeChannel writes b to the channel under writeMu, so Pipe's stdin
+// writer cannot interleave with the cancel chain or with another write
+// path. Returns the same shape as Channel.Write.
+func (s *FramedSession) writeChannel(b []byte) (int, error) {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	return s.ch.Write(b)
+}
+
 // writeAll writes b to the channel, respecting Caps.MaxWriteChunk by
-// splitting larger payloads into multiple Writes.
+// splitting larger payloads into multiple Writes. All writes go
+// through writeChannel.
 func (s *FramedSession) writeAll(b []byte) error {
 	caps := s.ch.Caps()
 	chunk := caps.MaxWriteChunk
 	if chunk <= 0 || chunk >= len(b) {
-		_, err := s.ch.Write(b)
+		_, err := s.writeChannel(b)
 		return err
 	}
 	for off := 0; off < len(b); {
@@ -232,7 +436,7 @@ func (s *FramedSession) writeAll(b []byte) error {
 		if end > len(b) {
 			end = len(b)
 		}
-		if _, err := s.ch.Write(b[off:end]); err != nil {
+		if _, err := s.writeChannel(b[off:end]); err != nil {
 			return err
 		}
 		off = end
@@ -309,7 +513,7 @@ func (s *FramedSession) driveParser(ctx context.Context, parser *sentinelParser)
 		case <-ctxDone:
 			ctxDone = nil // disable repeated firing
 			if cancelStage == 0 {
-				if _, werr := s.ch.Write([]byte{0x03}); werr != nil {
+				if _, werr := s.writeChannel([]byte{0x03}); werr != nil {
 					s.dead.Store(true)
 					return nil, fmt.Errorf("send ^C: %w", werr)
 				}
@@ -320,7 +524,7 @@ func (s *FramedSession) driveParser(ctx context.Context, parser *sentinelParser)
 		case <-phaseCh:
 			switch cancelStage {
 			case 1:
-				if _, werr := s.ch.Write([]byte{0x1c}); werr != nil {
+				if _, werr := s.writeChannel([]byte{0x1c}); werr != nil {
 					s.dead.Store(true)
 					return nil, fmt.Errorf("send ^\\: %w", werr)
 				}
