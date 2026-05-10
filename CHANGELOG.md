@@ -12,8 +12,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   ErrKind taxonomy, length-prefixed and line-delimited codecs).
 - `cmd/ptyrelay-agent`: remote binary supporting one-shot and REPL modes;
   ops ping/read/write/stat/lstat/list/remove/rename/mkdir_all/run/bye.
-- `pkg/backend/agent`: AgentBackend over the one-shot transport, with
-  base64-staged requests to survive PTY MAX_INPUT.
+- `pkg/backend/agent`: AgentBackend with two transports:
+  - `ModeOneShot` (default): one agent process per op; base64-staged
+    requests via tempfile to survive PTY MAX_INPUT.
+  - `ModeREPL`: long-lived agent over `Session.Pipe`; serialized
+    request/response multiplexed through one process. ~5000× faster
+    than one-shot on repeated ops, gated by an internal warmup ping
+    that confirms the agent is reading before any user payload.
+- `pkg/session`: real `Session.Pipe` (replacing the v0.1.0 stub) with
+  a streaming sentinel parser that delivers bytes line-by-line, plus
+  channel-write serialization so pipe-stdin and the cancel chain
+  can't interleave.
 - `pkg/bootstrap`: agent install over ShellBackend (uname-based platform
   probe, FileProvider/EmbedProvider, atomic write + sha256 verify).
 - `pkg/backend/router`: RouterBackend with idempotency-aware fallback

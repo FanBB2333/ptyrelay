@@ -34,22 +34,34 @@ short `printf '%s' >> tmp` chunks (so each shell command stays under
 the macOS PTY MAX_INPUT) and then runs the agent reading from that
 file. The wire format the agent sees is unchanged.
 
-### REPL (length-prefixed)
+### REPL (line-delimited)
 
-Used by AgentBackend's v0.3.0+ path over `Session.Pipe`. The client
-invokes `ptyrelay-agent --mode=repl` and exchanges multiple
+Used by AgentBackend's v0.2.0 REPL path over `Session.Pipe`. The
+client invokes `ptyrelay-agent --mode=repl` and exchanges multiple
 request/response pairs without restarting the process.
 
-Each message is `4 bytes big-endian length || JSON body`. There is no
-trailing terminator. The peer reads exactly `len` bytes after the
-header before parsing.
+Each message is the same shape as one-shot: a single JSON object
+terminated by `\n`. We deliberately use line-delimited (rather than
+length-prefixed) framing for the REPL transport because PTYs are not
+binary-safe — a 4-byte big-endian length header could carry byte
+values that the slave PTY's line discipline interprets (e.g. `\x03`
+== Ctrl-C, `\x04` == EOT), and turning every relevant flag off in
+stty is fragile across shells.
 
-A frame whose declared length exceeds `MaxFrameSize` (32 MiB) MUST be
-rejected without consuming the body — implementations should refuse to
-allocate that much based on adversary input.
+Length-prefixed framing (`proto.WriteFrame` / `ReadFrame`) is still
+provided in `pkg/proto` and is the right choice for binary-safe
+transports — a future WebSocket or kubectl-exec channel will adopt it.
 
-The client signals "I'm done" with the `bye` op; the agent replies with
-`ok=true` and exits cleanly. EOF on stdin also terminates the agent.
+The client signals "I'm done" with the `bye` op; the agent replies
+with `ok=true` and exits cleanly. EOF on stdin also terminates the
+agent.
+
+Behavioral note for clients: the streaming consumer that reads the
+agent's stdout (`io.PipeReader` returned by `Session.Pipe`) may pick
+up one extra trailing `\n` at the very end of the byte stream, in
+boundary cases where the wrapper's leading newline gets flushed
+before the END marker becomes detectable. Line-delimited JSON
+parsers tolerate this; strict-byte consumers should use `RunFramed`.
 
 ## Message shape
 
