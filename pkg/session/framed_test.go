@@ -5,61 +5,18 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
-	"os/exec"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/FanBB2333/ptyrelay/internal/testpty"
 	"github.com/FanBB2333/ptyrelay/pkg/channel"
-	"github.com/creack/pty"
 )
-
-// ptyChannel adapts a creack/pty master file to channel.Channel. Tests
-// drive a real shell behind a real PTY — the same shape as the production
-// tmux/code-local environments, so PTY echo, line discipline and stdio
-// flushing all behave realistically.
-type ptyChannel struct {
-	cmd  *exec.Cmd
-	ptmx *os.File
-	caps channel.Caps
-}
-
-func newBashPTYChannel(t *testing.T) *ptyChannel {
-	t.Helper()
-	bash, err := exec.LookPath("bash")
-	if err != nil {
-		t.Skip("bash not found in PATH")
-	}
-	cmd := exec.Command(bash, "--noprofile", "--norc", "-i")
-	ptmx, err := pty.Start(cmd)
-	if err != nil {
-		t.Fatalf("pty.Start: %v", err)
-	}
-	return &ptyChannel{
-		cmd:  cmd,
-		ptmx: ptmx,
-		caps: channel.Caps{BinarySafe: false, MaxWriteChunk: 4096},
-	}
-}
-
-func (c *ptyChannel) Read(b []byte) (int, error)                  { return c.ptmx.Read(b) }
-func (c *ptyChannel) Write(b []byte) (int, error)                 { return c.ptmx.Write(b) }
-func (c *ptyChannel) Resize(_ context.Context, _, _ uint16) error { return nil }
-func (c *ptyChannel) Caps() channel.Caps                          { return c.caps }
-func (c *ptyChannel) Close() error {
-	_ = c.ptmx.Close()
-	if c.cmd.Process != nil {
-		_ = c.cmd.Process.Kill()
-	}
-	_ = c.cmd.Wait()
-	return nil
-}
 
 func TestFramedSession_BashEcho(t *testing.T) {
 	t.Parallel()
-	ch := newBashPTYChannel(t)
+	ch := testpty.NewBash(t)
 	sess := New(ch, ShellBash)
 	defer func() { _ = sess.Close() }()
 
@@ -83,7 +40,7 @@ func TestFramedSession_BashEcho(t *testing.T) {
 
 func TestFramedSession_BashExitCode(t *testing.T) {
 	t.Parallel()
-	ch := newBashPTYChannel(t)
+	ch := testpty.NewBash(t)
 	sess := New(ch, ShellBash)
 	defer func() { _ = sess.Close() }()
 
@@ -104,7 +61,7 @@ func TestFramedSession_BashExitCode(t *testing.T) {
 
 func TestFramedSession_BashSequential(t *testing.T) {
 	t.Parallel()
-	ch := newBashPTYChannel(t)
+	ch := testpty.NewBash(t)
 	sess := New(ch, ShellBash)
 	defer func() { _ = sess.Close() }()
 
@@ -127,7 +84,7 @@ func TestFramedSession_BashSequential(t *testing.T) {
 
 func TestFramedSession_BashStdin(t *testing.T) {
 	t.Parallel()
-	ch := newBashPTYChannel(t)
+	ch := testpty.NewBash(t)
 	sess := New(ch, ShellBash)
 	defer func() { _ = sess.Close() }()
 
@@ -148,7 +105,7 @@ func TestFramedSession_BashStdin(t *testing.T) {
 
 func TestFramedSession_BashEmptyOutput(t *testing.T) {
 	t.Parallel()
-	ch := newBashPTYChannel(t)
+	ch := testpty.NewBash(t)
 	sess := New(ch, ShellBash)
 	defer func() { _ = sess.Close() }()
 
@@ -169,7 +126,7 @@ func TestFramedSession_BashEmptyOutput(t *testing.T) {
 
 func TestFramedSession_BashMultilineOutput(t *testing.T) {
 	t.Parallel()
-	ch := newBashPTYChannel(t)
+	ch := testpty.NewBash(t)
 	sess := New(ch, ShellBash)
 	defer func() { _ = sess.Close() }()
 

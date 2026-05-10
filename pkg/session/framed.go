@@ -354,7 +354,10 @@ func wrapCommand(cmd string, stdin []byte, nonce string) (string, error) {
 	sb.WriteString(nonce)
 	sb.WriteString(`; printf '\n__PR_BEG_'$__PR_N'__\n'; { `)
 	sb.WriteString(cmd)
-	sb.WriteString("; }")
+	// Use "\n}" rather than "; }" to terminate the brace group: when
+	// cmd itself ends with a newline (multi-line scripts), the
+	// "; }" form becomes "...\n; }" — a leading-`;` syntax error.
+	sb.WriteString("\n}")
 	if len(stdin) > 0 {
 		// Here-doc: must be terminated by the delimiter on a line of
 		// its own. After the closing delimiter line, the next command

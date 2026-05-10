@@ -11,11 +11,11 @@ import (
 //
 // The wire shape produced by [wrapCommand] is, in order:
 //
-//	 ... pre-noise (echo of our command, prompt, etc.) ...
-//	 \n __PR_BEG_<nonce> __ \n
-//	 <command output bytes — may include CR, ANSI, anything>
-//	 \n __PR_END_<nonce> __ :<exit-code>\n
-//	 ... post-noise (next prompt) ...
+//	... pre-noise (echo of our command, prompt, etc.) ...
+//	\n __PR_BEG_<nonce> __ \n
+//	<command output bytes — may include CR, ANSI, anything>
+//	\n __PR_END_<nonce> __ :<exit-code>\n
+//	... post-noise (next prompt) ...
 //
 // The parser tolerates the BEG marker arriving in the middle of an
 // already-buffered chunk, the END marker straddling a chunk boundary, and
