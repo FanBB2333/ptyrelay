@@ -1,3 +1,28 @@
+# Go binaries
+/ptyrelay
+/ptyrelay-agent
+/bin/
+/dist/
+
+# Test artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+
+# IDE / agent state
+.vscode/
+.idea/
+.claude/
+*.swp
+
+# Local logs / scratch
+*.log
+/tmp/
+/scratch/
+
+# ----- Python (kept from initial template, harmless) -----
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
