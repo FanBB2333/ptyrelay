@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added (v0.3.0 — in progress)
+- `pkg/channel/websocket`: generic [channel.Channel] backed by a single
+  WebSocket connection (gorilla/websocket). Defaults to "raw bytes in
+  binary frames"; ttyd / code-local / wetty-style envelopes are pluggable
+  via `Options.Encode` / `Decode` / `EncodeResize` hooks. Caps reports
+  `BinarySafe=true` and unbounded `MaxWriteChunk`.
+- E2E test (`integration_test.go`) wires a bash-over-WebSocket bridge
+  through Session + ShellBackend without any Backend-level changes,
+  proving the v0.3.0 promise: swap the Channel, keep the rest.
+
 ### Added (v0.2.0)
 - `pkg/proto`: agent wire protocol (typed Request/Response, op constants,
   ErrKind taxonomy, length-prefixed and line-delimited codecs).

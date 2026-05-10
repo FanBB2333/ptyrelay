@@ -46,6 +46,9 @@ func repoRoot(t *testing.T) string {
 }
 
 func TestBootstrap_EndToEnd(t *testing.T) {
+	if testing.Short() {
+		t.Skip("bootstrap: skipping multi-MB PTY upload integration test under -short")
+	}
 	t.Parallel()
 
 	provider := &bootstrap.FileProvider{Dir: buildAgentForHost(t)}
