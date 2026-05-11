@@ -314,6 +314,132 @@ func TestMCP_WriteThenReadTool(t *testing.T) {
 	}
 }
 
+// TestMCP_MkdirRenameRemove drives the three new filesystem tools
+// against the bash-over-WS bridge. Tests share state intentionally:
+// mkdir → rename → remove walks the directory through its lifecycle,
+// matching the pattern an LLM operator would actually take.
+func TestMCP_MkdirRenameRemove(t *testing.T) {
+	t.Parallel()
+	bin := buildMCP(t)
+	url, srv := startBashWS(t)
+	defer srv.Close()
+
+	c := startMCP(t, bin, []string{
+		"PTYRELAY_TRANSPORT=ws",
+		"PTYRELAY_WS_URL=" + url,
+		"PTYRELAY_NO_AGENT=1",
+		"PTYRELAY_TIMEOUT=30s",
+	})
+	defer c.Close()
+
+	_ = c.call(t, 1, "initialize", map[string]any{"protocolVersion": "2025-06-18"})
+
+	dir := fmt.Sprintf("/tmp/ptyrelay-mcp-mrr-%d", os.Getpid())
+	moved := dir + "-moved"
+	file := moved + "/payload"
+	fileRenamed := moved + "/payload-renamed"
+	// Best-effort cleanup if the test bails early.
+	defer func() {
+		_ = c.call(t, 99, "tools/call", map[string]any{
+			"name":      "run_command",
+			"arguments": map[string]any{"command": "rm -rf " + dir + " " + moved},
+		})
+	}()
+
+	// mkdir + rename exercised on the directory.
+	mk := c.call(t, 2, "tools/call", map[string]any{
+		"name":      "mkdir",
+		"arguments": map[string]any{"path": dir},
+	})
+	if mk["error"] != nil {
+		t.Fatalf("mkdir error: %v", mk["error"])
+	}
+	mv := c.call(t, 3, "tools/call", map[string]any{
+		"name":      "rename",
+		"arguments": map[string]any{"old_path": dir, "new_path": moved},
+	})
+	if mv["error"] != nil {
+		t.Fatalf("rename error: %v", mv["error"])
+	}
+
+	// Drop a file inside the renamed dir so we can hit remove + rename
+	// on a regular file (shell.Backend.Remove is rm -f, file-only).
+	w := c.call(t, 4, "tools/call", map[string]any{
+		"name": "write_file",
+		"arguments": map[string]any{
+			"path": file, "contents": "x",
+		},
+	})
+	if w["error"] != nil {
+		t.Fatalf("write_file (setup): %v", w["error"])
+	}
+	mv2 := c.call(t, 5, "tools/call", map[string]any{
+		"name":      "rename",
+		"arguments": map[string]any{"old_path": file, "new_path": fileRenamed},
+	})
+	if mv2["error"] != nil {
+		t.Fatalf("rename(file): %v", mv2["error"])
+	}
+	rm := c.call(t, 6, "tools/call", map[string]any{
+		"name":      "remove",
+		"arguments": map[string]any{"path": fileRenamed},
+	})
+	if rm["error"] != nil {
+		t.Fatalf("remove(file): %v", rm["error"])
+	}
+
+	// Verify the file is gone via stat — its absence is the success
+	// signal we're really proving roundtripped through the backend.
+	st := c.call(t, 7, "tools/call", map[string]any{
+		"name":      "stat",
+		"arguments": map[string]any{"path": fileRenamed},
+	})
+	res, _ := st["result"].(map[string]any)
+	content, _ := res["content"].([]any)
+	if len(content) == 0 {
+		t.Fatalf("stat returned empty content")
+	}
+	text, _ := content[0].(map[string]any)["text"].(string)
+	if !strings.Contains(text, "stat ") || !strings.Contains(strings.ToLower(text), "no such") {
+		t.Errorf("post-remove stat unexpectedly succeeded: %q", text)
+	}
+}
+
+func TestMCP_AgentInfoTool(t *testing.T) {
+	t.Parallel()
+	bin := buildMCP(t)
+	url, srv := startBashWS(t)
+	defer srv.Close()
+
+	c := startMCP(t, bin, []string{
+		"PTYRELAY_TRANSPORT=ws",
+		"PTYRELAY_WS_URL=" + url,
+		"PTYRELAY_NO_AGENT=1",
+		"PTYRELAY_TIMEOUT=30s",
+	})
+	defer c.Close()
+
+	_ = c.call(t, 1, "initialize", map[string]any{"protocolVersion": "2025-06-18"})
+
+	resp := c.call(t, 2, "tools/call", map[string]any{
+		"name":      "agent_info",
+		"arguments": map[string]any{},
+	})
+	if resp["error"] != nil {
+		t.Fatalf("agent_info error: %v", resp["error"])
+	}
+	res, _ := resp["result"].(map[string]any)
+	content, _ := res["content"].([]any)
+	text, _ := content[0].(map[string]any)["text"].(string)
+	// --no-agent → shell-only backend
+	if !strings.Contains(text, `"backend"`) || !strings.Contains(text, "shell") {
+		t.Errorf("agent_info missing backend=shell: %q", text)
+	}
+	if !strings.Contains(text, `"transport"`) || !strings.Contains(text, "ws") {
+		t.Errorf("agent_info missing transport=ws: %q", text)
+	}
+}
+
 func TestMCP_UnknownMethodErrors(t *testing.T) {
 	t.Parallel()
 	bin := buildMCP(t)

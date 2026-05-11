@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `EmbedProvider` expect. `--gzip` additionally emits `.gz` siblings
   ready for `--from-url`.
 
+- `cmd/ptyrelay-mcp`: four new tools — `mkdir`, `rename`, `remove`,
+  `agent_info`. The first three close the gap between MCP and the
+  Backend interface; `agent_info` reports which backend
+  (`shell` / `router(agent+shell)` / `router(shell-only)`), transport,
+  and agent path so an LLM operator can reason about Caps before
+  issuing expensive ops.
 - `cmd/ptyrelay -tags embedagents`: build-tag-gated `//go:embed` of
   `cmd/ptyrelay/agents/` that wires `bootstrap.EmbedProvider` into the
   CLI. Default builds stay slim and reject `bootstrap` /  `--install`

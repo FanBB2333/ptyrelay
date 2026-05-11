@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"strings"
+
+	"github.com/FanBB2333/ptyrelay/pkg/backend/router"
 )
 
 // toolSpecs returns the static MCP tool descriptors served by tools/list.
@@ -80,6 +82,52 @@ func toolSpecs() []toolSpec {
 				"required": []string{"path"},
 			},
 		},
+		{
+			Name:        "mkdir",
+			Description: "Create a remote directory and any missing parents (mkdir -p). Idempotent.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": stringProp("Directory path to create."),
+					"mode": map[string]any{
+						"type":        "integer",
+						"description": "Unix mode for newly created dirs (octal int, e.g. 493 == 0o755). Defaults to 493.",
+					},
+				},
+				"required": []string{"path"},
+			},
+		},
+		{
+			Name:        "rename",
+			Description: "Rename or move a remote path. Idempotent (same source+dest pair re-runs cleanly).",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"old_path": stringProp("Existing absolute path on the remote host."),
+					"new_path": stringProp("Destination absolute path."),
+				},
+				"required": []string{"old_path", "new_path"},
+			},
+		},
+		{
+			Name:        "remove",
+			Description: "Remove a remote file or empty directory. NonIdempotent — a missing target is an error, not a no-op.",
+			InputSchema: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"path": stringProp("Path to remove (file or empty directory)."),
+				},
+				"required": []string{"path"},
+			},
+		},
+		{
+			Name:        "agent_info",
+			Description: "Report which backend (agent or shell) is currently serving requests and basic identity (transport, agent path, healthy flag). Useful when an LLM needs to decide whether to expect separate stderr or honor MaxWriteChunk.",
+			InputSchema: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{},
+			},
+		},
 	}
 }
 
@@ -104,6 +152,14 @@ func (s *server) callTool(p toolsCallParams) (toolsCallResult, error) {
 		return s.toolListDir(ctx, p.Arguments), nil
 	case "stat":
 		return s.toolStat(ctx, p.Arguments), nil
+	case "mkdir":
+		return s.toolMkdir(ctx, p.Arguments), nil
+	case "rename":
+		return s.toolRename(ctx, p.Arguments), nil
+	case "remove":
+		return s.toolRemove(ctx, p.Arguments), nil
+	case "agent_info":
+		return s.toolAgentInfo(), nil
 	default:
 		return errorContent("unknown tool: " + p.Name), nil
 	}
@@ -183,6 +239,73 @@ func (s *server) toolListDir(ctx context.Context, raw json.RawMessage) toolsCall
 		return errorContent(fmt.Sprintf("list %s: %v", a.Path, err))
 	}
 	out, _ := json.MarshalIndent(entries, "", "  ")
+	return textContent(string(out))
+}
+
+func (s *server) toolMkdir(ctx context.Context, raw json.RawMessage) toolsCallResult {
+	var a struct {
+		Path string `json:"path"`
+		Mode int    `json:"mode"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil || a.Path == "" {
+		return errorContent("mkdir: missing 'path' or bad args")
+	}
+	mode := os.FileMode(a.Mode)
+	if mode == 0 {
+		mode = 0o755
+	}
+	if err := s.be.MkdirAll(ctx, a.Path, mode); err != nil {
+		return errorContent(fmt.Sprintf("mkdir %s: %v", a.Path, err))
+	}
+	return textContent(fmt.Sprintf("created %s (mode %o)", a.Path, mode))
+}
+
+func (s *server) toolRename(ctx context.Context, raw json.RawMessage) toolsCallResult {
+	var a struct {
+		OldPath string `json:"old_path"`
+		NewPath string `json:"new_path"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil || a.OldPath == "" || a.NewPath == "" {
+		return errorContent("rename: missing 'old_path' or 'new_path'")
+	}
+	if err := s.be.Rename(ctx, a.OldPath, a.NewPath); err != nil {
+		return errorContent(fmt.Sprintf("rename %s -> %s: %v", a.OldPath, a.NewPath, err))
+	}
+	return textContent(fmt.Sprintf("renamed %s -> %s", a.OldPath, a.NewPath))
+}
+
+func (s *server) toolRemove(ctx context.Context, raw json.RawMessage) toolsCallResult {
+	var a struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil || a.Path == "" {
+		return errorContent("remove: missing 'path'")
+	}
+	if err := s.be.Remove(ctx, a.Path); err != nil {
+		return errorContent(fmt.Sprintf("remove %s: %v", a.Path, err))
+	}
+	return textContent("removed " + a.Path)
+}
+
+// toolAgentInfo answers the diagnostic "what am I talking to" question.
+// We surface the routing-level view (which Backend is active, which
+// transport configured it) so an LLM can reason about Caps before
+// issuing expensive ops.
+func (s *server) toolAgentInfo() toolsCallResult {
+	info := map[string]any{
+		"transport": s.cfg.Transport,
+		"shell":     s.cfg.Shell.String(),
+		"backend":   "shell", // default; overridden below if we have a router
+	}
+	if rb, ok := s.be.(*router.Backend); ok {
+		if rb.AgentHealthy() {
+			info["backend"] = "router(agent+shell)"
+		} else {
+			info["backend"] = "router(shell-only;agent_unhealthy)"
+		}
+		info["agent_path"] = rb.Agent().AgentPath()
+	}
+	out, _ := json.MarshalIndent(info, "", "  ")
 	return textContent(string(out))
 }
 
