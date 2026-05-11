@@ -1,134 +1,184 @@
 # ptyrelay
 
-> Relay your shell over any pty.
+> Turn any byte-stream shell session into a structured remote capability surface — file I/O, command execution, atomic uploads — without installing anything by default.
 
-让 Claude Code 等本地 agent 通过既有 pty 通道（tmux+SSH、code-local
-WebSocket 等）操控受限网络环境下的远端服务器——把"只是一个字节流"的 shell
-session 变成一个结构化的远端能力面：文件读写、命令执行。
+[![Release](https://img.shields.io/github/v/release/FanBB2333/ptyrelay?sort=semver)](https://github.com/FanBB2333/ptyrelay/releases)
+[![Go Reference](https://pkg.go.dev/badge/github.com/FanBB2333/ptyrelay.svg)](https://pkg.go.dev/github.com/FanBB2333/ptyrelay)
+[![Go Report Card](https://goreportcard.com/badge/github.com/FanBB2333/ptyrelay)](https://goreportcard.com/report/github.com/FanBB2333/ptyrelay)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/FanBB2333/ptyrelay)](go.mod)
+[![License](https://img.shields.io/github/license/FanBB2333/ptyrelay)](LICENSE)
 
-## Status
+`ptyrelay` lets a local agent (Claude Code, an MCP client, a script) drive a
+restricted-network remote host through a shell session you already have —
+a `tmux` pane, a `ttyd`/`wetty` WebSocket bridge, a `docker exec -i`, a
+`kubectl exec -i`, a plain `ssh -T`. Same client code, swap the transport.
 
-**v0.2.0 — Agent + Router.** 既有 ShellBackend（什么都不预装就能跑），也有
-AgentBackend（远端跑一个 Go 二进制走 JSON RPC，binary-safe、stderr
-独立、错误分类）。RouterBackend 按 op 幂等性自动选路：
-agent 健康时走 RPC，agent 缺失或 ReadOnly/Idempotent 失败时透明回落
-到 shell；NonIdempotent 失败上抛由调用方决策。Bootstrap 会自动把 agent
-二进制 atomic-write 到远端（sha256 校验 + 平台探测）。
+## Highlights
 
-v0.3.0+ — 三种 transport（tmux / WebSocket / subprocess）、命令行
-入口 (`cmd/ptyrelay`) 和 MCP server (`cmd/ptyrelay-mcp`) 都已就绪。
-`pkg/channel/websocket` 是通用 gorilla/websocket Channel，
-`BinarySafe=true`，hook 化 envelope 适配 ttyd / wetty 等；
-`pkg/channel/subprocess` 把任意 `stdin/stdout` 命令包成 Channel，
-等价于一行 docker exec / kubectl exec / ssh -T 直通。Agent REPL
-比一次性模式快 ~283×（见 `pkg/backend/agent/bench_test.go`）。
-Bootstrap 既能本地上传二进制（`--provider-dir`），也能让远端
-`curl` 自取（`--from-url`，支持 `{os}`/`{arch}` 模板和 sha256 校验）。
+- **Three transports, one stack.** `tmux` / WebSocket / subprocess all
+  satisfy the same `Channel` interface — Session, Backend, and
+  Bootstrap don't know which one is underneath.
+- **Two backends, idempotency-aware routing.** `ShellBackend` works on
+  any POSIX shell with zero install. `AgentBackend` runs a small Go
+  binary on the remote (binary-safe I/O, separate stderr, classified
+  errors, ~283× faster on repeated ops). `RouterBackend` picks per op
+  and falls back transparently when safe.
+- **Bootstrap, two ways.** Ship the agent binary from the local side
+  (`--provider-dir`, or `-tags embedagents` for a self-contained CLI)
+  or have the remote `curl`/`wget` it directly with sha256
+  verification (`--from-url`).
+- **CLI + MCP server.** `cmd/ptyrelay` for ad-hoc use,
+  `cmd/ptyrelay-mcp` exposes nine tools (`read_file`, `write_file`,
+  `run_command`, `list_dir`, `stat`, `mkdir`, `rename`, `remove`,
+  `agent_info`) over stdio JSON-RPC for MCP clients.
+- **Reliability extras.** Opt-in WebSocket keepalive ping/pong against
+  half-open TCP, opt-in mid-session reconnect with explicit
+  `ErrReconnected` signal, structured `log/slog` events across all
+  three backends.
+
+## Quickstart (CLI)
 
 ```sh
-# 通过本机 tmux pane 操作远端
+go install github.com/FanBB2333/ptyrelay/cmd/ptyrelay@latest
+
+# Through an existing local tmux pane (the pane runs your ssh chain).
 ptyrelay exec --tmux work:0.0 -- uname -a
 
-# 通过 code-server / ttyd 的 WS 桥
+# Through a ttyd / wetty / code-server WebSocket bridge.
 ptyrelay get  --ws ws://host:8765/term /etc/hostname
 
-# 进容器调试
+# Straight into a container without ssh in the middle.
 ptyrelay exec --exec "docker exec -i my-container bash" -- ps aux
 ptyrelay get  --exec "kubectl exec -i -n prod api-0 -- bash" /var/log/app.log
+
+# Auto-install the agent on first contact, then use it.
+ptyrelay bootstrap --ws ws://host:8765/term --provider-dir dist/agents
+ptyrelay agent-info --ws ws://host:8765/term
 ```
 
-详见 [TODOs.md](TODOs.md)、[docs/TRANSPORTS.md](docs/TRANSPORTS.md)、
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)、
-[docs/PROTOCOL.md](docs/PROTOCOL.md)、
-[docs/SECURITY.md](docs/SECURITY.md)。
+For every subcommand: exactly one of `--tmux`, `--ws`, or `--exec` is
+required. Pass `--log-level=debug` to see structured probe / route
+events on stderr.
 
-## Quickstart
-
-```sh
-go get github.com/FanBB2333/ptyrelay@latest
-```
-
-通过现有 tmux pane 操作远端：
+## Quickstart (Library)
 
 ```go
 package main
 
 import (
-	"context"
-	"fmt"
-	"log"
+    "context"
+    "fmt"
+    "log"
 
-	"github.com/FanBB2333/ptyrelay/pkg/backend/shell"
-	"github.com/FanBB2333/ptyrelay/pkg/channel/tmux"
-	"github.com/FanBB2333/ptyrelay/pkg/session"
+    "github.com/FanBB2333/ptyrelay/pkg/backend/shell"
+    "github.com/FanBB2333/ptyrelay/pkg/channel/tmux"
+    "github.com/FanBB2333/ptyrelay/pkg/session"
 )
 
 func main() {
-	ctx := context.Background()
+    ctx := context.Background()
 
-	// 1. 在某个 tmux pane 里准备好你想"借用"的 shell 通道。
-	//    常见做法：tmux 内 ssh 到跳板机，再 ssh 到目标。
-	ch, err := tmux.New(ctx, tmux.Options{Pane: "my-session:0.0"})
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer ch.Close()
+    // 1. Borrow a shell session that already exists in a tmux pane.
+    ch, err := tmux.New(ctx, tmux.Options{Pane: "work:0.0"})
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer ch.Close()
 
-	// 2. Session 在 Channel 之上加 sentinel framing：每条命令都被
-	//    BEG/END 包起来,这样 ptyrelay 能从混杂的 shell 输出里准确
-	//    捞出本次命令的 stdout 和 exit code。
-	sess := session.New(ch, session.ShellBash)
-	defer sess.Close()
+    // 2. Session adds sentinel framing (BEG/END markers + exit code)
+    //    on top of the byte stream so each command's output is
+    //    extractable from arbitrary shell noise.
+    sess := session.New(ch, session.ShellBash)
+    defer sess.Close()
 
-	// 3. ShellBackend 把 Session 包装成 RemoteFS + RemoteExec。
-	be := shell.New(sess)
+    // 3. ShellBackend turns the Session into RemoteFS + RemoteExec.
+    be := shell.New(sess)
 
-	// 文件读写
-	if err := be.Write(ctx, "/tmp/hello.txt", []byte("hi from ptyrelay\n"), 0o644); err != nil {
-		log.Fatal(err)
-	}
-	data, err := be.Read(ctx, "/tmp/hello.txt")
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("read: %q\n", data)
+    if err := be.Write(ctx, "/tmp/hello.txt",
+        []byte("hi from ptyrelay\n"), 0o644); err != nil {
+        log.Fatal(err)
+    }
+    data, _ := be.Read(ctx, "/tmp/hello.txt")
+    fmt.Printf("read: %q\n", data)
 
-	// 命令执行
-	res, err := be.Run(ctx, "uname -a", nil)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Printf("uname: %s (exit=%d)\n", res.Stdout, res.ExitCode)
+    res, _ := be.Run(ctx, "uname -a", nil)
+    fmt.Printf("uname: %s (exit=%d)\n", res.Stdout, res.ExitCode)
 }
 ```
 
-需要先有 tmux pane？用内置的 `InitSession` helper 起一个：
+Need a tmux pane spun up on the fly? `tmux.InitSession` / `tmux.KillSession`
+do the boilerplate.
 
-```go
-opts, _ := tmux.InitSession(ctx, tmux.InitOptions{
-	SessionName: "ptyrelay-demo",
-	Command:     "ssh user@jumphost",
-})
-defer tmux.KillSession(ctx, tmux.InitOptions{SessionName: "ptyrelay-demo"})
+## Architecture
 
-ch, _ := tmux.New(ctx, opts)
-// ...同上
 ```
+       Client (CLI / MCP / your code)
+                │
+        ┌───────▼────────┐
+        │    Backend     │  RouterBackend | AgentBackend | ShellBackend
+        ├────────────────┤
+        │    Session     │  sentinel framing, per-shell prelude, cancel chain
+        ├────────────────┤
+        │    Channel     │  tmux | websocket | subprocess
+        └───────┬────────┘
+                │
+            Remote shell
+```
+
+- **Channel** — one ordered byte stream. Pluggable; pick or write your
+  own (see `docs/TRANSPORTS.md`).
+- **Session** — sentinel-framed RPC over the byte stream; isolates one
+  command's output from shell noise.
+- **Backend** — typed `RemoteFS` + `RemoteExec` ops, idempotency
+  annotations.
+
+See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for the full picture,
+[`docs/PROTOCOL.md`](docs/PROTOCOL.md) for the agent wire format,
+[`docs/TRANSPORTS.md`](docs/TRANSPORTS.md) for per-transport notes and
+recipes, and [`docs/SECURITY.md`](docs/SECURITY.md) for the threat model.
+
+## Transports
+
+| Transport       | BinarySafe | Separate stderr | Use when                                    |
+|-----------------|:----------:|:---------------:|---------------------------------------------|
+| `tmux`          | base64\*   | no              | You already have a tmux pane on a jumphost. |
+| `websocket`     | yes        | no              | A `ttyd`/`wetty`/`code-server` WS bridge.   |
+| `subprocess`    | yes        | no              | `docker exec`, `kubectl exec`, `ssh -T`.    |
+
+\* tmux's PTY layer corrupts raw NUL/high bytes; AgentBackend stages
+binary payloads as base64 to round-trip safely.
+
+## MCP
+
+```sh
+go install github.com/FanBB2333/ptyrelay/cmd/ptyrelay-mcp@latest
+```
+
+Configure transport via env (`PTYRELAY_TRANSPORT=ws|tmux|exec`,
+`PTYRELAY_WS_URL=…`, etc.) and point your MCP client at the binary.
+Tools: `read_file`, `write_file`, `run_command`, `list_dir`, `stat`,
+`mkdir`, `rename`, `remove`, `agent_info`.
 
 ## Build / Test
 
 ```sh
 go build ./...
 
-# 日常开发：跳过 multi-MB PTY 上传集成测试，~50s 跑完
+# Dev loop — skips multi-MB PTY upload integration tests, ~50s.
 go test -short -race ./...
 
-# 完整集成验证（含 Bootstrap / e2e_FullStack / SessionOverWebSocket）
-# 三个包并行跑 PTY 上传会互相争抢，所以用 -p 1 串行
+# Full integration (Bootstrap, e2e_FullStack, SessionOverWebSocket).
+# Multiple PTY-bound packages contend under -race, so serialize.
 go test -p 1 ./...
+
+# Self-contained CLI with embedded agent matrix.
+scripts/build-agents.sh
+cp dist/agents/* cmd/ptyrelay/agents/
+go build -tags embedagents -o ptyrelay ./cmd/ptyrelay
 ```
 
-测试矩阵需要 `bash` + `tmux`，缺哪个对应的集成测试会自动 skip。
+`bash` and `tmux` are needed for the matching integration tests;
+the suites auto-skip when either is missing.
 
 ## License
 
