@@ -73,11 +73,15 @@ Subcommands:
   bootstrap              Install the agent binary on the remote
   agent-info             Print remote agent path / version
 
-Transport flags (one of --tmux or --ws is required):
+Transport flags (one of --tmux, --ws or --exec is required):
   --tmux <pane>          Use a tmux pane (e.g. "my-sess:0.0")
   --tmux-socket <path>   Optional tmux socket path
   --ws <url>             Use a WebSocket bridge (ws:// or wss://)
   --ws-header k=v        Extra header for the WS upgrade (repeatable)
+  --exec "<argv>"        Launch a local command and use its stdio
+                         (e.g. "docker exec -i container bash",
+                          "kubectl exec -i -n ns pod -- bash",
+                          "ssh -T user@host bash")
 
 Backend flags:
   --no-agent             Force ShellBackend only (skip the agent path)

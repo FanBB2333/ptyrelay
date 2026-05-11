@@ -13,6 +13,7 @@ import (
 	"github.com/FanBB2333/ptyrelay/pkg/backend/router"
 	"github.com/FanBB2333/ptyrelay/pkg/backend/shell"
 	"github.com/FanBB2333/ptyrelay/pkg/channel"
+	"github.com/FanBB2333/ptyrelay/pkg/channel/subprocess"
 	"github.com/FanBB2333/ptyrelay/pkg/channel/tmux"
 	"github.com/FanBB2333/ptyrelay/pkg/channel/websocket"
 	"github.com/FanBB2333/ptyrelay/pkg/session"
@@ -21,10 +22,11 @@ import (
 // config bundles every parameter that controls how the server talks to
 // the remote. Populated from environment variables once at startup.
 type config struct {
-	Transport string // "tmux" | "ws"
+	Transport string // "tmux" | "ws" | "exec"
 	TmuxPane  string
 	TmuxSock  string
 	WSURL     string
+	ExecCmd   string // argv for subprocess transport (whitespace-split)
 	Shell     session.ShellKind
 	AgentPath string
 	NoAgent   bool
@@ -37,6 +39,7 @@ func loadConfig() (*config, error) {
 		TmuxPane:  os.Getenv("PTYRELAY_TMUX_PANE"),
 		TmuxSock:  os.Getenv("PTYRELAY_TMUX_SOCK"),
 		WSURL:     os.Getenv("PTYRELAY_WS_URL"),
+		ExecCmd:   os.Getenv("PTYRELAY_EXEC"),
 		AgentPath: os.Getenv("PTYRELAY_AGENT"),
 		NoAgent:   truthy(os.Getenv("PTYRELAY_NO_AGENT")),
 	}
@@ -50,10 +53,14 @@ func loadConfig() (*config, error) {
 		if c.WSURL == "" {
 			return nil, errors.New("PTYRELAY_TRANSPORT=ws requires PTYRELAY_WS_URL")
 		}
+	case "exec":
+		if c.ExecCmd == "" {
+			return nil, errors.New("PTYRELAY_TRANSPORT=exec requires PTYRELAY_EXEC")
+		}
 	case "":
-		return nil, errors.New("PTYRELAY_TRANSPORT not set (want tmux|ws)")
+		return nil, errors.New("PTYRELAY_TRANSPORT not set (want tmux|ws|exec)")
 	default:
-		return nil, fmt.Errorf("PTYRELAY_TRANSPORT=%q unsupported (want tmux|ws)", c.Transport)
+		return nil, fmt.Errorf("PTYRELAY_TRANSPORT=%q unsupported (want tmux|ws|exec)", c.Transport)
 	}
 
 	switch strings.ToLower(os.Getenv("PTYRELAY_SHELL")) {
@@ -106,6 +113,12 @@ func dialFromConfig(ctx context.Context, c *config) (backend.Backend, func(), er
 		})
 	case "ws":
 		ch, err = websocket.Dial(dctx, websocket.Options{URL: c.WSURL})
+	case "exec":
+		argv := strings.Fields(c.ExecCmd)
+		if len(argv) == 0 {
+			return nil, nil, errors.New("PTYRELAY_EXEC is empty")
+		}
+		ch, err = subprocess.Start(dctx, subprocess.Options{Command: argv})
 	}
 	if err != nil {
 		return nil, nil, fmt.Errorf("transport: %w", err)

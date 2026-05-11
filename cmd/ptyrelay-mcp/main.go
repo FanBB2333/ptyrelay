@@ -8,10 +8,12 @@
 // The remote target is configured via environment variables, so the MCP
 // client (typically Claude Code) only needs to launch the binary:
 //
-//	PTYRELAY_TRANSPORT  tmux | ws        (required)
+//	PTYRELAY_TRANSPORT  tmux | ws | exec (required)
 //	PTYRELAY_TMUX_PANE  pane target      (if transport=tmux)
 //	PTYRELAY_TMUX_SOCK  socket path      (optional)
 //	PTYRELAY_WS_URL     ws://… or wss:// (if transport=ws)
+//	PTYRELAY_EXEC       argv to launch   (if transport=exec, e.g.
+//	                                      "docker exec -i container bash")
 //	PTYRELAY_SHELL      bash|zsh|dash|sh (default bash)
 //	PTYRELAY_AGENT      remote agent path (default ~/.local/bin/ptyrelay-agent)
 //	PTYRELAY_NO_AGENT   1 to force ShellBackend only

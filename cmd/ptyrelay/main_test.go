@@ -190,6 +190,47 @@ func TestCLI_PutAndGetRoundTrip(t *testing.T) {
 	}
 }
 
+func TestCLI_ExecTransport(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not found")
+	}
+	bin := buildCLI(t)
+
+	// --exec spawns bash locally and uses its stdio as the channel.
+	// Same Session+ShellBackend stack, no remote host required.
+	code, stdout, stderr := runCLI(t, bin,
+		"exec",
+		"--exec", "bash --noprofile --norc",
+		"--no-agent", "--timeout", "30s",
+		"--", "echo", "exec-transport-marker")
+	if code != 0 {
+		t.Fatalf("exit=%d stdout=%q stderr=%q", code, stdout, stderr)
+	}
+	if !strings.Contains(stdout+stderr, "exec-transport-marker") {
+		t.Errorf("marker missing: stdout=%q stderr=%q", stdout, stderr)
+	}
+}
+
+func TestCLI_TransportMutuallyExclusive(t *testing.T) {
+	t.Parallel()
+	bin := buildCLI(t)
+
+	// Passing both --ws and --exec must be rejected with a clear
+	// error rather than silently picking one.
+	code, _, stderr := runCLI(t, bin,
+		"exec",
+		"--ws", "ws://127.0.0.1:1",
+		"--exec", "bash",
+		"--", "true")
+	if code == 0 {
+		t.Errorf("expected non-zero exit when both transports set, got 0")
+	}
+	if !strings.Contains(stderr, "exactly one of") {
+		t.Errorf("stderr missing exclusivity message: %q", stderr)
+	}
+}
+
 func TestCLI_HelpAndUsage(t *testing.T) {
 	t.Parallel()
 	bin := buildCLI(t)

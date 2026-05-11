@@ -16,6 +16,7 @@ import (
 	"github.com/FanBB2333/ptyrelay/pkg/backend/shell"
 	"github.com/FanBB2333/ptyrelay/pkg/bootstrap"
 	"github.com/FanBB2333/ptyrelay/pkg/channel"
+	"github.com/FanBB2333/ptyrelay/pkg/channel/subprocess"
 	"github.com/FanBB2333/ptyrelay/pkg/channel/tmux"
 	"github.com/FanBB2333/ptyrelay/pkg/channel/websocket"
 	"github.com/FanBB2333/ptyrelay/pkg/session"
@@ -29,6 +30,11 @@ type commonFlags struct {
 
 	wsURL    string
 	wsHeader stringList
+
+	// execCmd is the full argv for a subprocess-backed transport, e.g.
+	// `docker exec -i container bash`. Parsed via whitespace fields —
+	// wrap complex commands in `bash -c '…'`.
+	execCmd string
 
 	shellName string
 	timeout   time.Duration
@@ -44,6 +50,7 @@ func (c *commonFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&c.tmuxSocket, "tmux-socket", "", "tmux socket path (-S form)")
 	fs.StringVar(&c.wsURL, "ws", "", "WebSocket URL (ws:// or wss://)")
 	fs.Var(&c.wsHeader, "ws-header", "WS upgrade header k=v (repeatable)")
+	fs.StringVar(&c.execCmd, "exec", "", `subprocess transport: local argv to launch, e.g. "docker exec -i container bash"`)
 	fs.StringVar(&c.shellName, "shell", "bash", "remote shell: bash|zsh|dash|sh")
 	fs.DurationVar(&c.timeout, "timeout", 60*time.Second, "overall context timeout")
 
@@ -78,8 +85,14 @@ func (c *connection) Close() {
 
 // dial builds Channel → Session → Backend per the parsed flags.
 func dial(c *commonFlags) (*connection, error) {
-	if (c.tmuxPane == "") == (c.wsURL == "") {
-		return nil, errors.New("exactly one of --tmux or --ws is required")
+	picked := 0
+	for _, v := range []string{c.tmuxPane, c.wsURL, c.execCmd} {
+		if v != "" {
+			picked++
+		}
+	}
+	if picked != 1 {
+		return nil, errors.New("exactly one of --tmux, --ws or --exec is required")
 	}
 	shellKind, err := parseShell(c.shellName)
 	if err != nil {
@@ -107,6 +120,13 @@ func dial(c *commonFlags) (*connection, error) {
 			hdr.Add(kv[:i], kv[i+1:])
 		}
 		ch, err = websocket.Dial(ctx, websocket.Options{URL: c.wsURL, Header: hdr})
+	case c.execCmd != "":
+		argv := strings.Fields(c.execCmd)
+		if len(argv) == 0 {
+			cancel()
+			return nil, errors.New("--exec: empty command")
+		}
+		ch, err = subprocess.Start(ctx, subprocess.Options{Command: argv})
 	}
 	if err != nil {
 		cancel()

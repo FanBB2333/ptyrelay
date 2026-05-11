@@ -44,6 +44,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   package. Default `BinarySafe=true`, unlimited `MaxWriteChunk`,
   no Resize (use a PTY wrapper if you need geometry).
 - `docs/TRANSPORTS.md`: subprocess section + recipes.
+- `cmd/ptyrelay --exec "<argv>"`: subprocess transport at the CLI.
+  Argv is whitespace-split — wrap complex commands in `bash -c '…'`.
+  Exclusivity check covers all three transports.
+- `cmd/ptyrelay-mcp`: same via `PTYRELAY_TRANSPORT=exec` +
+  `PTYRELAY_EXEC="<argv>"`.
 
 ## [0.3.0] — 2026-05-11
 
