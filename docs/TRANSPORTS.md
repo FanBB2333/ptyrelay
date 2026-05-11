@@ -10,16 +10,16 @@ trade-offs picking between them.
 
 ## At a glance
 
-| Property                    | tmux        | WebSocket   |
-|-----------------------------|-------------|-------------|
-| `BinarySafe`                | false       | **true**    |
-| `MaxWriteChunk`             | 32 KiB      | unlimited   |
-| `SeparateStderr`            | false       | false       |
-| `ScrollbackLimited`         | false       | false       |
-| Concurrent reads            | no          | no          |
-| Needs remote tool           | `tmux`      | any WS bridge |
-| Resize support              | yes         | hook-defined |
-| Typical use case            | SSH+tmux pane on jumphost | code-server / cloud shell / ttyd |
+| Property            | tmux                       | WebSocket                          | subprocess                          |
+|---------------------|----------------------------|------------------------------------|-------------------------------------|
+| `BinarySafe`        | false                      | **true**                           | **true**                            |
+| `MaxWriteChunk`     | 32 KiB                     | unlimited                          | unlimited                           |
+| `SeparateStderr`    | false                      | false                              | false                               |
+| `ScrollbackLimited` | false                      | false                              | false                               |
+| Concurrent reads    | no                         | no                                 | no                                  |
+| Needs remote tool   | `tmux`                     | any WS bridge                      | any command speaking stdio          |
+| Resize support      | yes                        | hook-defined                       | no                                  |
+| Typical use case    | SSH+tmux pane on jumphost  | code-server / cloud shell / ttyd   | `docker exec` / `kubectl exec` / `ssh -T` |
 
 ## TmuxChannel — `pkg/channel/tmux`
 
@@ -155,6 +155,53 @@ upstream wire format is pinned down.
   pipe to a shell exists.
 - When you want binary safety end-to-end (large file pushes via
   AgentBackend REPL stay binary all the way down).
+
+## SubprocessChannel — `pkg/channel/subprocess`
+
+### How it works
+
+The simplest possible adapter: launch a local command, treat its
+stdin/stdout as the Channel byte stream. Anything that already exposes
+"stdin in, stdout out" — `docker exec -i`, `kubectl exec -i`,
+`lxc exec`, `podman exec`, `ssh -T` — becomes a Channel without
+writing a transport.
+
+```go
+ch, _ := subprocess.Start(ctx, subprocess.Options{
+    Command: []string{"docker", "exec", "-i", "my-container", "bash"},
+})
+
+// or kubectl:
+ch, _ := subprocess.Start(ctx, subprocess.Options{
+    Command: []string{"kubectl", "exec", "-i", "-n", "prod", "api-0", "--", "bash"},
+})
+
+// or plain ssh:
+ch, _ := subprocess.Start(ctx, subprocess.Options{
+    Command: []string{"ssh", "-T", "user@host", "bash"},
+})
+```
+
+### Caveats
+
+- **No PTY.** The child runs with regular pipes; programs that
+  detect "am I a terminal?" (e.g. `vim`, full-screen TUIs) won't
+  enable terminal mode. For the framed-command use case ptyrelay is
+  built for, this is fine — Session's prelude turns echo off
+  *because* it's running over a PTY, and pipes don't echo anyway.
+- **No Resize.** Without a PTY there's no geometry to update. If
+  you need that, layer this Channel inside a creack/pty wrapper.
+- **stderr is dropped.** The Channel exposes only stdout. Most
+  `<runner> exec -i` invocations merge stderr into stdout anyway;
+  if you need separation, route stderr to a log file via your own
+  wrapper command.
+
+### When to pick subprocess
+
+- Local container debugging (`docker exec`).
+- Kubernetes troubleshooting (`kubectl exec`).
+- Air-gapped jumphost where you can `ssh -T` from your workstation
+  and don't want a tmux session for ptyrelay's exclusive use.
 
 ## Adding a new transport
 

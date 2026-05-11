@@ -37,6 +37,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   HTTP-level upgrade failures (4xx/5xx returned via
   `gws.ErrBadHandshake`) are treated as terminal and surface
   immediately — silent retry there would mask config bugs.
+- `pkg/channel/subprocess`: third Channel implementation. Launches
+  a local command and uses its stdio as the byte stream. Covers
+  `docker exec -i`, `kubectl exec -i`, `lxc exec`, `ssh -T`, and
+  any other "stdio-in / stdio-out" runner in a single ~150-line
+  package. Default `BinarySafe=true`, unlimited `MaxWriteChunk`,
+  no Resize (use a PTY wrapper if you need geometry).
+- `docs/TRANSPORTS.md`: subprocess section + recipes.
 
 ## [0.3.0] — 2026-05-11
 
