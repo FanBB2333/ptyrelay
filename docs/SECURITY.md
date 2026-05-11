@@ -95,17 +95,21 @@ probability is `2^-64` per call.
 catches the case where the remote architecture mismatches the binary
 (it would land but fail to exec).
 
-A future v0.3.0 may sign the agent binary with a public key the local
+A future release may sign the agent binary with a public key the local
 CLI verifies before considering an existing on-remote agent
-trustworthy. v0.2.0 trusts the bootstrap-time write.
+trustworthy. Current releases trust the bootstrap-time write only;
+operators with stricter requirements should re-run `bootstrap` rather
+than reusing an already-installed agent across trust boundaries.
 
 ### Side-channel leak via logs
 
-Default-verbosity `slog` records do not include payload bytes. Debug
-logging (`--debug`) caps any payload preview at 256 bytes and explicitly
-excludes file contents and base64 envelopes. The `Result.Stdout` and
-`Result.Stderr` fields produced by Run are NOT logged at any verbosity
-— callers who want to log them must do it themselves at the call site.
+`log/slog` instrumentation in `pkg/backend/{shell,agent,router}` and
+`cmd/ptyrelay --log-level=debug|info|warn|error` emit only **metadata**:
+op name, routing decision, agent path, probe duration, and `err.Error()`
+strings. Payload bytes (file contents, command stdin, `Result.Stdout`,
+`Result.Stderr`, base64-encoded envelopes) are never logged at any level
+— callers who want them in logs must do so at their own call site. The
+default is silent (no-op handler), so log output is fully opt-in.
 
 Tempfile names (`*.tmp.<nonce>`) include random nonces but no payload
 information, so `ls /tmp` doesn't surface ptyrelay activity meaningfully.

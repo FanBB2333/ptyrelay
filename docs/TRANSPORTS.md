@@ -5,8 +5,9 @@ rides on top of it. Anything that satisfies `pkg/channel.Channel` plugs
 into Session + Backend without code changes elsewhere — see the
 `TestE2E_SessionOverWebSocket` test for the abstraction-closure proof.
 
-This document covers the two transports shipped in v0.3.0 and the
-trade-offs picking between them.
+This document covers the three transports shipped in v0.3.x —
+`tmux`, `websocket`, `subprocess` — and the trade-offs when picking
+between them.
 
 ## At a glance
 
@@ -124,12 +125,13 @@ gives you raw binary frames and full Session/Backend compatibility.
 The bridge used by ptyrelay's own tests (`startBashOverWS` in
 `pkg/channel/websocket/integration_test.go`) is exactly that pattern.
 
-#### code-local / remoteterminal
+#### JSON-envelope bridges
 
-The code-local protocol wraps frames in a JSON envelope. ptyrelay's
-v0.3.0 ships the generic Channel; a thin adapter package
-(`pkg/channel/websocket/codelocal`) is a natural follow-up once the
-upstream wire format is pinned down.
+If your bridge wraps every frame in a JSON envelope
+(`{"type":"stdout","data":"…"}` and friends), the same `Encode` /
+`Decode` hooks decompose into JSON marshal/unmarshal. Keep the
+adapter in your own package — ptyrelay deliberately ships the
+generic Channel rather than baking in any one server's envelope.
 
 ### Caveats
 
@@ -143,9 +145,21 @@ upstream wire format is pinned down.
   ack-by-sentinel mechanism still works, but timing-sensitive
   callers should think in terms of round-trips rather than single
   writes.
-- **Reconnect is out of scope**. v0.3.0's Channel handles a single
-  connection. Reconnection on transient failure belongs in a higher
-  layer (or a future option).
+- **Keepalive against half-open TCP**. By default a dropped TCP can
+  hang `Read` indefinitely — no FIN ever arrives. Set
+  `Options.PingInterval` (and optionally `PongTimeout`) to enable
+  RFC 6455 ping/pong: the read deadline gets extended on every Pong,
+  and a peer that goes silent surfaces an error like any other torn
+  connection. Recommended starting point: 30 s.
+- **Opt-in mid-session reconnect.** Set `Options.Reconnect=true`
+  (plus `MaxReconnects` / `ReconnectBackoff`) to have the Channel
+  re-Dial when the underlying TCP drops. The pending `Read` returns
+  `websocket.ErrReconnected` exactly once so higher layers can reset
+  framing state; subsequent ops use the fresh connection. Note: this
+  cannot resurrect remote state — the new TCP talks to a new remote
+  process. Higher layers that own session state (FramedSession
+  sentinel parser, AgentBackend REPL) must observe `ErrReconnected`
+  and rebuild.
 
 ### When to pick WebSocket
 

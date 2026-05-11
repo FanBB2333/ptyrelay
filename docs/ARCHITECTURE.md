@@ -1,11 +1,11 @@
 # ptyrelay Architecture
 
-This document explains the layering, the choices behind each layer, and where future milestones plug in. For the project rationale see [README.md](../README.md); for the milestone-by-milestone plan see [TODOs.md](../TODOs.md).
+This document explains the layering, the choices behind each layer, and where new transports/backends plug in. For the project rationale see [README.md](../README.md); for the milestone-by-milestone plan see [TODOs.md](../TODOs.md).
 
 ## Layers
 
 ```
-        Claude Code / 调用方
+        Caller (CLI / MCP / library code)
                 │
         ┌───────┴───────┐
         │    Backend    │   RemoteFS + RemoteExec
@@ -18,16 +18,16 @@ This document explains the layering, the choices behind each layer, and where fu
         ┌───────┴───────┐
         │    Channel    │   bytes in / bytes out + Caps
         └───────┬───────┘
-       ┌────────┴────────┐
-       │                 │
-  TmuxChannel       (future) WebSocketChannel
+       ┌────────┼─────────────┐
+       │        │             │
+  TmuxChannel  WebSocketChannel  SubprocessChannel
 ```
 
 Each layer has one responsibility and is replaceable independently of the layers above and below it.
 
 ### Channel — `pkg/channel`
 
-A `Channel` is a bidirectional, ordered byte pipe with a `Caps` descriptor. It is the only layer that knows about the underlying transport (tmux pane, code-local WebSocket, kubectl exec, etc.).
+A `Channel` is a bidirectional, ordered byte pipe with a `Caps` descriptor. It is the only layer that knows about the underlying transport (tmux pane, WebSocket bridge, `docker exec`/`kubectl exec` stdio, etc.).
 
 `Caps` exposes the transport's idiosyncrasies — `BinarySafe`, `MaxWriteChunk`, `ScrollbackLimited` — so higher layers can adapt without per-transport branching. For example, a binary-safe channel skips base64 wrapping; a transport with a tight `MaxWriteChunk` triggers the upper layer's chunked-write path.
 
@@ -68,7 +68,7 @@ Each op carries an idempotency class:
 | mkdir/rename/write/open_write | Idempotent | yes (atomic write makes redo safe) | yes |
 | remove/run | NonIdempotent | no | no |
 
-`Op.Class()` returns this in code; a future `RouterBackend` (v0.2.0) consults it when deciding whether a Shell fallback is safe after an agent dies mid-op. v0.1.0 only ships `ShellBackend` so the routing is moot, but the metadata is wired through so the upgrade is local.
+`Op.Class()` returns this in code; `RouterBackend` (since v0.2.0) consults it when deciding whether a Shell fallback is safe after an agent op fails — `ReadOnly` and `Idempotent` retry silently through Shell, `NonIdempotent` surface the error to the caller.
 
 #### ShellBackend — `pkg/backend/shell`
 
@@ -91,9 +91,9 @@ Without `base64`, ShellBackend refuses to construct — bytes can't be encoded.
 
 ## Why these splits
 
-The **Channel ↔ Session** seam is what makes "borrow any existing shell channel" work. A future `WebSocketChannel` (v0.3.0, M7) just needs to implement the same `Read/Write/Caps` contract; the Session and Backend above it are unchanged. The acceptance test for that seam being correct: an integration test runs the *same* `ShellBackend` test through both `TmuxChannel` and `WebSocketChannel` and they pass.
+The **Channel ↔ Session** seam is what makes "borrow any existing shell channel" work. v0.3.x ships three Channels (`tmux`, `websocket`, `subprocess`) and the Session/Backend layers above them are identical for all three. The acceptance test for that seam being correct: integration tests run the *same* `ShellBackend` test suite over each Channel and they all pass.
 
-The **Session ↔ Backend** seam is what makes the upgrade from "shell commands" to "agent RPC" non-disruptive. v0.1.0's `ShellBackend` and v0.2.0's `AgentBackend` both implement `RemoteFS + RemoteExec`. The op-class metadata on the interface lets `RouterBackend` route between them per-call without callers re-thinking error handling.
+The **Session ↔ Backend** seam is what makes the upgrade from "shell commands" to "agent RPC" non-disruptive. `ShellBackend` and `AgentBackend` both implement `RemoteFS + RemoteExec`. The op-class metadata on the interface lets `RouterBackend` route between them per-call without callers re-thinking error handling.
 
 ## Handling PTY echo
 
@@ -110,16 +110,25 @@ If we used a literal nonce in the wrapper (i.e. `printf '__PR_BEG_<nonce>__'`), 
 ```
 .
 ├── cmd/
-│   ├── ptyrelay/        # local CLI / library entry (v0.1.0: placeholder)
-│   └── ptyrelay-agent/  # remote binary (v0.2.0)
+│   ├── ptyrelay/         # local CLI (exec / get / put / stat / ls / bootstrap / agent-info)
+│   ├── ptyrelay-agent/   # remote binary (one-shot + REPL modes)
+│   └── ptyrelay-mcp/     # MCP stdio server exposing nine tools
 ├── pkg/
-│   ├── channel/         # Channel interface + Caps
-│   │   └── tmux/        # TmuxChannel
-│   ├── session/         # FramedSession (sentinel framing)
-│   └── backend/
-│       ├── *.go         # interfaces + op-class table
-│       └── shell/       # ShellBackend
-└── internal/
-    ├── shellquote/      # POSIX single-quote escape
-    └── testpty/         # creack/pty-backed Channel for tests
+│   ├── channel/          # Channel interface + Caps
+│   │   ├── tmux/         # TmuxChannel
+│   │   ├── websocket/    # WebSocketChannel (gorilla/websocket)
+│   │   └── subprocess/   # SubprocessChannel (docker/kubectl/ssh stdio)
+│   ├── session/          # FramedSession (sentinel framing, cancel chain)
+│   ├── backend/
+│   │   ├── *.go          # interfaces + op-class table
+│   │   ├── shell/        # ShellBackend (zero-install)
+│   │   ├── agent/        # AgentBackend (JSON-RPC over Session)
+│   │   └── router/       # RouterBackend (idempotency-aware fallback)
+│   ├── bootstrap/        # agent install (Provider + FromURL)
+│   └── proto/            # agent wire protocol (typed Request/Response)
+├── internal/
+│   ├── shellquote/       # POSIX single-quote escape
+│   └── testpty/          # creack/pty-backed Channel for tests
+└── scripts/
+    └── build-agents.sh   # cross-compile matrix for bootstrap providers
 ```
