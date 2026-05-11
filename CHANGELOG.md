@@ -41,6 +41,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   go build -tags embedagents ./cmd/ptyrelay`.
 
 ### Fixed
+- `pkg/bootstrap/fetch.go`: stage the fetch script to a remote tempfile
+  via `shell.Backend.Write` and invoke as `sh <tmpfile>`, instead of
+  passing the script inline through `sh -c '<~1KB script>'`. The inline
+  path hung the framed Session indefinitely in a narrow 900–1500-byte
+  band on macOS bash 3.2 — single-Write payloads of that size lost
+  synchronization with the PTY input buffer and the END marker never
+  arrived. Staging keeps the framed command line constant (~120 bytes)
+  regardless of script size, so the in-band-buffer interaction can't
+  trigger. Repro: `TestBootstrap_FromURL` / `_SHA256Mismatch` hung 67 s
+  before this; ~100 ms after.
 - Multi-line shell scripts containing `exit N` no longer kill the
   framed Session. `pkg/bootstrap/fetch.go` runs the inner script in
   a child `sh -c '…'` so non-zero exits propagate as the command's

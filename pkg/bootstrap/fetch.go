@@ -2,6 +2,8 @@ package bootstrap
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"fmt"
 	"strings"
 
@@ -29,15 +31,19 @@ import (
 //
 // All intermediate state lives under $TMPDIR; on failure the tempfile
 // is removed so a retry starts clean.
+//
+// The script is staged to a remote tempfile via the proven chunked-base64
+// path (`shell.Backend.Write`) and then invoked as `sh <tmpfile>`. The
+// staging hop avoids a PTY-buffer interaction we hit on macOS bash 3.2:
+// inline `sh -c '<~1KB script>'` writes lose synchronization in a narrow
+// 900–1500-byte band, hanging the framed session forever. Staging keeps
+// the framed command line constant (~120 bytes) regardless of script size.
 func fetchOnRemote(ctx context.Context, sb *shell.Backend, url, sha256hex, installPath string) error {
 	qURL := shellquote.Quote(url)
 	qSHA := shellquote.Quote(sha256hex)
 	qInst := shellquote.Quote(installPath)
 	isGz := strings.HasSuffix(strings.ToLower(url), ".gz")
 
-	// The script is intentionally written with `set -e` and explicit
-	// trap-on-error cleanup so a half-download never leaves an
-	// executable-but-broken file at installPath.
 	gunzipBlock := ""
 	if isGz {
 		gunzipBlock = `
@@ -68,8 +74,7 @@ func fetchOnRemote(ctx context.Context, sb *shell.Backend, url, sha256hex, insta
 `, qSHA)
 	}
 
-	inner := fmt.Sprintf(`
-set -e
+	inner := fmt.Sprintf(`set -e
 TMP=$(mktemp 2>/dev/null || mktemp -t ptyrelay-agent)
 trap 'rm -f "$TMP" "$TMP".gz' EXIT
 if command -v curl >/dev/null 2>&1; then
@@ -86,12 +91,20 @@ mv "$TMP" %s
 trap - EXIT
 `, qURL, qURL, gunzipBlock, verifyBlock, qInst)
 
-	// Run in a child `sh` so `set -e` + `exit N` only terminate the
-	// child, not the parent bash session that frames the call. Without
-	// this isolation, any failed branch (`sha256 mismatch`, `no curl`,
-	// etc.) would kill the Session and leave the END marker unprinted.
-	script := "sh -c " + shellquote.Quote(inner)
-	res, err := sb.Run(ctx, script, nil)
+	var nb [8]byte
+	if _, err := rand.Read(nb[:]); err != nil {
+		return fmt.Errorf("nonce: %w", err)
+	}
+	scriptPath := "/tmp/ptyrelay-fetch." + hex.EncodeToString(nb[:]) + ".sh"
+	if err := sb.Write(ctx, scriptPath, []byte(inner), 0o700); err != nil {
+		return fmt.Errorf("stage fetch script: %w", err)
+	}
+
+	// Subshell isolates `exit $rc` so it can't kill the framed bash. The
+	// trailing `rm` cleans up the staged script whether sh exited 0 or not.
+	qScript := shellquote.Quote(scriptPath)
+	runCmd := "( sh " + qScript + "; __rc=$?; rm -f " + qScript + "; exit $__rc )"
+	res, err := sb.Run(ctx, runCmd, nil)
 	if err != nil {
 		return err
 	}
