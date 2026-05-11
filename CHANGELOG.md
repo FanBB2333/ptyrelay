@@ -16,6 +16,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - E2E test (`integration_test.go`) wires a bash-over-WebSocket bridge
   through Session + ShellBackend without any Backend-level changes,
   proving the v0.3.0 promise: swap the Channel, keep the rest.
+- `cmd/ptyrelay`: real CLI (replaces the v0.1.0 placeholder). Subcommands
+  `exec / get / put / stat / ls / bootstrap / agent-info`, transport
+  picked per-invocation via `--tmux <pane>` or `--ws <url>`, optional
+  `--install` auto-bootstrap, `--no-agent` to force shell-only. Each
+  subcommand exits with the remote command's exit code where applicable.
 
 ### Added (v0.2.0)
 - `pkg/proto`: agent wire protocol (typed Request/Response, op constants,
