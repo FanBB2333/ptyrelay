@@ -49,6 +49,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Exclusivity check covers all three transports.
 - `cmd/ptyrelay-mcp`: same via `PTYRELAY_TRANSPORT=exec` +
   `PTYRELAY_EXEC="<argv>"`.
+- `websocket.Options.PingInterval` + `PongTimeout`: WebSocket-level
+  keepalive. When `PingInterval > 0`, the Channel sends `PingMessage`
+  every interval and extends the read deadline on every Pong. Half-open
+  TCP no longer hangs Read forever — the connection surfaces an error
+  after ~`PongTimeout` (default 3×PingInterval). Recommended starting
+  point: 30 s. Default is opt-out (0).
 - Structured logging (`log/slog`): `shell.WithLogger`,
   `agent.WithLogger`, `router.WithLogger`. Default is silent (no-op
   handler) — opt-in only. Events emitted: `probe.start/done`,

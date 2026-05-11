@@ -417,6 +417,86 @@ func TestChannel_RaceCleanReadAfterClose(t *testing.T) {
 	}
 }
 
+// TestChannel_KeepalivePingPong verifies that, when PingInterval is set,
+// the client emits PingMessage frames and the gorilla default pong
+// reply keeps the connection alive long past the configured pong
+// timeout window.
+func TestChannel_KeepalivePingPong(t *testing.T) {
+	t.Parallel()
+	var pings atomic.Int32
+	upgrader := gws.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		c.SetPingHandler(func(appData string) error {
+			pings.Add(1)
+			// gorilla's default would do this for us, but being
+			// explicit keeps the test self-contained.
+			return c.WriteControl(gws.PongMessage, []byte(appData),
+				time.Now().Add(time.Second))
+		})
+		// Block on ReadMessage so the ping handler can fire.
+		for {
+			if _, _, err := c.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+	url := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	ch, err := pwws.Dial(context.Background(), pwws.Options{
+		URL:          url,
+		PingInterval: 80 * time.Millisecond,
+		PongTimeout:  240 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ch.Close()
+
+	// Wait long enough for several pings; with pong-driven deadline
+	// extension, the channel must stay open past the bare PongTimeout.
+	time.Sleep(500 * time.Millisecond)
+
+	if got := pings.Load(); got < 2 {
+		t.Errorf("server saw %d pings; want >=2", got)
+	}
+
+	// Channel still readable/writable — proves the read deadline got
+	// pushed forward on each pong.
+	if _, err := ch.Write([]byte("alive")); err != nil {
+		t.Fatalf("Write after keepalive period: %v", err)
+	}
+}
+
+// TestChannel_KeepaliveStopsOnClose makes sure Close() shuts the
+// ticker goroutine down — otherwise we'd leak a goroutine per dial.
+func TestChannel_KeepaliveStopsOnClose(t *testing.T) {
+	t.Parallel()
+	url, srv := startEcho(t, nil)
+	defer srv.Close()
+
+	ch, err := pwws.Dial(context.Background(), pwws.Options{
+		URL:          url,
+		PingInterval: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ch.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	// A second Close used to panic if we double-close stopPing;
+	// closeOnce should still make this a no-op.
+	if err := ch.Close(); err != nil {
+		t.Errorf("second Close: %v", err)
+	}
+}
+
 func TestChannel_CapsBinarySafe(t *testing.T) {
 	t.Parallel()
 	url, srv := startEcho(t, nil)

@@ -58,6 +58,21 @@ type Options struct {
 	// doubles the previous wait (`backoff << attempt`). 0 means 200ms.
 	DialBackoff time.Duration
 
+	// PingInterval, when > 0, enables WebSocket-level keepalive: a
+	// PingMessage is sent every PingInterval, and the read deadline
+	// is extended on every Pong. If the peer goes ~3×PingInterval
+	// without responding, ReadMessage fails and the Channel surfaces
+	// the error as a torn connection — much better than a half-open
+	// TCP socket where Read just blocks forever.
+	//
+	// Recommended starting point: 30s. Set to 0 (default) to opt out.
+	PingInterval time.Duration
+
+	// PongTimeout caps how long after a Ping we wait for a Pong
+	// before considering the connection dead. Only meaningful when
+	// PingInterval > 0. Default: 3 × PingInterval.
+	PongTimeout time.Duration
+
 	// Encode optionally wraps a Write payload into a frame body and picks
 	// the WebSocket message type. nil means "send the bytes verbatim as a
 	// binary frame". This is the hook that ttyd / code-local adapters use
@@ -93,6 +108,7 @@ type Channel struct {
 	closed  bool
 
 	closeOnce sync.Once
+	stopPing  chan struct{} // closed in Close to stop the ping ticker
 }
 
 // Dial opens a WebSocket connection per opts and returns a Channel ready
@@ -126,12 +142,20 @@ func Dial(ctx context.Context, opts Options) (*Channel, error) {
 		cancel()
 		if err == nil {
 			c := &Channel{
-				conn: conn,
-				enc:  opts.Encode,
-				dec:  opts.Decode,
-				rs:   opts.EncodeResize,
+				conn:     conn,
+				enc:      opts.Encode,
+				dec:      opts.Decode,
+				rs:       opts.EncodeResize,
+				stopPing: make(chan struct{}),
 			}
 			c.cond = sync.NewCond(&c.readMu)
+			if opts.PingInterval > 0 {
+				pongTimeout := opts.PongTimeout
+				if pongTimeout <= 0 {
+					pongTimeout = 3 * opts.PingInterval
+				}
+				c.startKeepalive(opts.PingInterval, pongTimeout)
+			}
 			go c.readPump()
 			return c, nil
 		}
@@ -150,6 +174,48 @@ func Dial(ctx context.Context, opts Options) (*Channel, error) {
 		}
 	}
 	return nil, lastErr
+}
+
+// startKeepalive wires WebSocket-level ping/pong so a half-open TCP
+// socket can't strand a Read forever. The mechanism has three parts:
+//
+//  1. A pong handler that bumps the read deadline by pongTimeout every
+//     time the peer answers — proof of life resets the watchdog.
+//  2. An initial SetReadDeadline so we don't have to receive a pong
+//     before the first ping to start the clock.
+//  3. A goroutine that sends a PingMessage every `interval`. It exits
+//     when stopPing closes (Close()) or when a ping write fails (the
+//     connection is gone and readPump will surface the error).
+//
+// We intentionally don't try to be clever about resetting the deadline
+// on every received data frame: pongs alone are sufficient evidence,
+// and tying the deadline to data would let a peer that sends junk
+// keep a broken half-open link alive.
+func (c *Channel) startKeepalive(interval, pongTimeout time.Duration) {
+	_ = c.conn.SetReadDeadline(time.Now().Add(pongTimeout))
+	c.conn.SetPongHandler(func(string) error {
+		return c.conn.SetReadDeadline(time.Now().Add(pongTimeout))
+	})
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-c.stopPing:
+				return
+			case <-ticker.C:
+				c.writeMu.Lock()
+				err := c.conn.WriteControl(
+					gws.PingMessage, nil,
+					time.Now().Add(interval),
+				)
+				c.writeMu.Unlock()
+				if err != nil {
+					return
+				}
+			}
+		}
+	}()
 }
 
 // isRetryableDialError says whether err is the kind of failure that's
@@ -259,6 +325,10 @@ func (c *Channel) Resize(_ context.Context, cols, rows uint16) error {
 func (c *Channel) Close() error {
 	var err error
 	c.closeOnce.Do(func() {
+		// Signal the keepalive goroutine before touching conn — once
+		// it's stopped writing, our polite-close WriteControl won't
+		// race with a concurrent ping.
+		close(c.stopPing)
 		c.readMu.Lock()
 		c.closed = true
 		c.cond.Broadcast()
