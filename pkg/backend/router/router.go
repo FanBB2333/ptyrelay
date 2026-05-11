@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"sync"
 
 	"github.com/FanBB2333/ptyrelay/pkg/backend"
@@ -34,10 +35,28 @@ import (
 type Backend struct {
 	agent *agent.Backend
 	shell *shell.Backend
+	log   *slog.Logger
 
 	mu             sync.RWMutex
 	agentHealthy   bool
 	agentLastError error
+}
+
+// Option customizes a Backend at construction.
+type Option func(*Backend)
+
+// WithLogger installs a structured logger. Routing decisions and
+// fallbacks are the highest-signal events here.
+//
+// Events emitted: `route` (Debug, per op, includes which backend was
+// picked), `agent.unhealthy` (Warn, when an agent op fails and the
+// op is fallbackable), `agent.healthy` (Info, on successful Probe).
+func WithLogger(l *slog.Logger) Option {
+	return func(b *Backend) {
+		if l != nil {
+			b.log = l.With("backend", "router")
+		}
+	}
 }
 
 // New constructs a RouterBackend. Both agent and shell must be ready —
@@ -45,8 +64,17 @@ type Backend struct {
 //
 // New does NOT probe automatically; call Probe (or any FS/Exec op,
 // which probes lazily) before relying on the routing decision.
-func New(a *agent.Backend, s *shell.Backend) *Backend {
-	return &Backend{agent: a, shell: s}
+func New(a *agent.Backend, s *shell.Backend, opts ...Option) *Backend {
+	b := &Backend{agent: a, shell: s, log: discardLogger()}
+	for _, opt := range opts {
+		opt(b)
+	}
+	return b
+}
+
+// discardLogger returns a no-op slog.Logger used as the default.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 // Agent / Shell expose the wrapped backends for tests + introspection.
@@ -70,12 +98,14 @@ func (b *Backend) Probe(ctx context.Context) error {
 	}
 	if err := b.agent.Probe(ctx); err != nil {
 		b.markAgentUnhealthy(err)
+		b.log.WarnContext(ctx, "agent.unhealthy", "reason", "probe_failed", "err", err.Error())
 		// We don't return error here: a router with a dead agent but
 		// healthy shell is still functional, just slower. Callers
 		// that want strict agent-mode should check AgentHealthy.
 		return nil
 	}
 	b.markAgentHealthy()
+	b.log.InfoContext(ctx, "agent.healthy")
 	return nil
 }
 
@@ -125,16 +155,21 @@ func (b *Backend) route(
 	b.mu.RUnlock()
 
 	if healthy {
+		b.log.DebugContext(ctx, "route", "op", string(op), "via", "agent")
 		err := agentFn()
 		if err == nil {
 			return nil
 		}
 		if op.Class() == backend.ClassNonIdempotent {
+			b.log.WarnContext(ctx, "agent.error.no_fallback",
+				"op", string(op), "class", "non_idempotent", "err", err.Error())
 			// Don't auto-fallback. Caller decides.
 			return err
 		}
 		// Mark unhealthy and fall through to shell.
 		b.markAgentUnhealthy(err)
+		b.log.WarnContext(ctx, "agent.unhealthy", "reason", "op_failed",
+			"op", string(op), "err", err.Error())
 	}
 
 	if shellFn == nil {
@@ -142,6 +177,7 @@ func (b *Backend) route(
 		// op).
 		return errors.New("router: agent unavailable and op has no shell fallback")
 	}
+	b.log.DebugContext(ctx, "route", "op", string(op), "via", "shell")
 	return shellFn()
 }
 

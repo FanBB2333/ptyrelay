@@ -231,6 +231,31 @@ func TestCLI_TransportMutuallyExclusive(t *testing.T) {
 	}
 }
 
+func TestCLI_LogLevelEmitsEvents(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("bash"); err != nil {
+		t.Skip("bash not found")
+	}
+	bin := buildCLI(t)
+
+	// At --log-level=debug, route + probe events from the slog
+	// instrumentation must appear on stderr. We only assert *some*
+	// expected key shows up, not exact formatting (the text handler
+	// can shift across Go versions).
+	code, _, stderr := runCLI(t, bin,
+		"exec",
+		"--exec", "bash --noprofile --norc",
+		"--no-agent", "--timeout", "30s",
+		"--log-level", "debug",
+		"--", "echo", "log-test")
+	if code != 0 {
+		t.Fatalf("exit=%d stderr=%q", code, stderr)
+	}
+	if !strings.Contains(stderr, "backend=shell") {
+		t.Errorf("expected shell backend log attr in stderr, got: %q", stderr)
+	}
+}
+
 func TestCLI_HelpAndUsage(t *testing.T) {
 	t.Parallel()
 	bin := buildCLI(t)

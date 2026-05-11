@@ -49,6 +49,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Exclusivity check covers all three transports.
 - `cmd/ptyrelay-mcp`: same via `PTYRELAY_TRANSPORT=exec` +
   `PTYRELAY_EXEC="<argv>"`.
+- Structured logging (`log/slog`): `shell.WithLogger`,
+  `agent.WithLogger`, `router.WithLogger`. Default is silent (no-op
+  handler) — opt-in only. Events emitted: `probe.start/done`,
+  `agent.healthy/unhealthy`, `route` (which backend served each op),
+  `agent.error.no_fallback` for the NonIdempotent-can't-fall-back
+  case. CLI exposes `--log-level debug|info|warn|error` (events go
+  to stderr); MCP follows the host's convention and stays silent.
 
 ## [0.3.0] — 2026-05-11
 

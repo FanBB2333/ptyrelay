@@ -16,7 +16,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/FanBB2333/ptyrelay/pkg/backend"
 	"github.com/FanBB2333/ptyrelay/pkg/session"
@@ -39,6 +42,7 @@ const (
 // Backend implements [backend.Backend] over a [session.FramedSession].
 type Backend struct {
 	sess *session.FramedSession
+	log  *slog.Logger
 
 	mu         sync.Mutex
 	probed     bool
@@ -73,11 +77,28 @@ func WithMaxShellFileSize(n int) Option {
 	}
 }
 
+// WithLogger installs a structured logger. Nil (default) produces a
+// silent backend; pass `slog.Default()` to send events to stderr, or
+// a custom *slog.Logger to integrate with your application's logging.
+//
+// Events are attached with attr `backend=shell`. Logged events:
+// `probe.start` (Debug), `probe.done` (Debug or Error), `op.start`
+// (Debug, per RemoteFS/RemoteExec call), `op.done` (Debug or Error,
+// with `duration_ms`).
+func WithLogger(l *slog.Logger) Option {
+	return func(b *Backend) {
+		if l != nil {
+			b.log = l.With("backend", "shell")
+		}
+	}
+}
+
 // New constructs a Backend. The first call that needs platform info
 // triggers detection (cached); call Probe to do it eagerly.
 func New(sess *session.FramedSession, opts ...Option) *Backend {
 	b := &Backend{
 		sess:             sess,
+		log:              discardLogger(),
 		chunkSize:        defaultChunkSize,
 		maxShellFileSize: defaultMaxShellFileSize,
 	}
@@ -85,6 +106,12 @@ func New(sess *session.FramedSession, opts ...Option) *Backend {
 		opt(b)
 	}
 	return b
+}
+
+// discardLogger returns a no-op slog.Logger. Used as the default so
+// libraries that don't configure logging are silent.
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
 // Session returns the underlying FramedSession. Test-only helper —
@@ -100,12 +127,17 @@ func (b *Backend) Probe(ctx context.Context) error {
 	if b.closedFlag {
 		return errors.New("shell: backend closed")
 	}
+	b.log.DebugContext(ctx, "probe.start")
+	start := time.Now()
 	p, err := detect(ctx, b.sess)
 	if err != nil {
+		b.log.ErrorContext(ctx, "probe.done", "duration_ms", time.Since(start).Milliseconds(), "err", err.Error())
 		return err
 	}
 	b.probe = p
 	b.probed = true
+	b.log.DebugContext(ctx, "probe.done", "duration_ms", time.Since(start).Milliseconds(),
+		"os", p.OS, "stat_style", p.StatStyle)
 	return nil
 }
 

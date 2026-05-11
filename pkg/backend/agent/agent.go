@@ -17,6 +17,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"os"
 	"strconv"
 	"sync"
@@ -34,6 +36,7 @@ type Backend struct {
 	sess      *session.FramedSession
 	agentPath string
 	mode      Mode
+	log       *slog.Logger
 
 	// Atomic counter used to generate per-request IDs. Helpful for
 	// debugging traces and used by the REPL transport for response
@@ -50,12 +53,23 @@ type Backend struct {
 // Option customizes a Backend at construction.
 type Option func(*Backend)
 
+// WithLogger installs a structured logger. Nil (default) produces a
+// silent backend. Events are attached with `backend=agent` plus the
+// current mode (`one_shot` or `repl`).
+func WithLogger(l *slog.Logger) Option {
+	return func(b *Backend) {
+		if l != nil {
+			b.log = l.With("backend", "agent")
+		}
+	}
+}
+
 // New constructs an AgentBackend that invokes the agent at agentPath on
 // the remote. agentPath should be an absolute path or a name that
 // resolves on the remote's PATH; arguments are shell-quoted before
 // execution.
 func New(sess *session.FramedSession, agentPath string, opts ...Option) *Backend {
-	b := &Backend{sess: sess, agentPath: agentPath}
+	b := &Backend{sess: sess, agentPath: agentPath, log: slog.New(slog.NewTextHandler(io.Discard, nil))}
 	for _, opt := range opts {
 		opt(b)
 	}
@@ -69,13 +83,26 @@ func (b *Backend) AgentPath() string { return b.agentPath }
 // protocol version. Failure of any kind here means RouterBackend
 // shouldn't try to use the agent.
 func (b *Backend) Probe(ctx context.Context) error {
+	mode := "one_shot"
+	if b.mode == ModeREPL {
+		mode = "repl"
+	}
+	b.log.DebugContext(ctx, "probe.start", "mode", mode, "agent_path", b.agentPath)
+	start := time.Now()
 	var data proto.PingData
 	if err := b.callOp(ctx, proto.OpPing, nil, &data); err != nil {
+		b.log.ErrorContext(ctx, "probe.done", "mode", mode,
+			"duration_ms", time.Since(start).Milliseconds(), "err", err.Error())
 		return fmt.Errorf("agent: probe: %w", err)
 	}
 	if data.Version != proto.Version {
+		b.log.ErrorContext(ctx, "probe.done", "mode", mode,
+			"err", "protocol_version_mismatch", "got", data.Version, "want", proto.Version)
 		return fmt.Errorf("agent: protocol version %d (want %d)", data.Version, proto.Version)
 	}
+	b.log.DebugContext(ctx, "probe.done", "mode", mode,
+		"duration_ms", time.Since(start).Milliseconds(),
+		"agent_version", data.AgentVersion)
 	return nil
 }
 

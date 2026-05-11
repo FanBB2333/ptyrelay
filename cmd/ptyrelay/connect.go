@@ -5,6 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"os"
 	"strings"
@@ -43,6 +44,8 @@ type commonFlags struct {
 	agentPath   string
 	doInstall   bool
 	providerDir string
+
+	logLevel string // "", "debug", "info", "warn", "error"
 }
 
 func (c *commonFlags) register(fs *flag.FlagSet) {
@@ -58,6 +61,7 @@ func (c *commonFlags) register(fs *flag.FlagSet) {
 	fs.StringVar(&c.agentPath, "agent", "", "remote agent path (default ~/.local/bin/ptyrelay-agent)")
 	fs.BoolVar(&c.doInstall, "install", false, "auto-bootstrap agent if missing")
 	fs.StringVar(&c.providerDir, "provider-dir", "", "agent binaries directory for --install")
+	fs.StringVar(&c.logLevel, "log-level", "", "structured log level: debug|info|warn|error (default: silent)")
 }
 
 // stringList is a repeatable flag value.
@@ -134,7 +138,13 @@ func dial(c *commonFlags) (*connection, error) {
 	}
 
 	sess := session.New(ch, shellKind)
-	sb := shell.New(sess)
+	log, err := buildLogger(c.logLevel)
+	if err != nil {
+		_ = ch.Close()
+		cancel()
+		return nil, err
+	}
+	sb := shell.New(sess, shell.WithLogger(log))
 
 	teardown := func() {
 		_ = sess.Close()
@@ -182,8 +192,8 @@ func dial(c *commonFlags) (*connection, error) {
 		c.agentPath = home + "/.local/bin/ptyrelay-agent"
 	}
 
-	ab := agent.New(sess, c.agentPath)
-	rb := router.New(ab, sb)
+	ab := agent.New(sess, c.agentPath, agent.WithLogger(log))
+	rb := router.New(ab, sb, router.WithLogger(log))
 	_ = rb.Probe(ctx) // probe is best-effort; fallback works even if agent's down
 
 	return &connection{
@@ -214,4 +224,27 @@ func parseShell(name string) (session.ShellKind, error) {
 func fail(format string, args ...any) int {
 	fmt.Fprintf(os.Stderr, "ptyrelay: "+format+"\n", args...)
 	return 1
+}
+
+// buildLogger maps the --log-level flag to a configured *slog.Logger.
+// Empty (default) returns nil — backends will silently no-op.
+func buildLogger(level string) (*slog.Logger, error) {
+	if level == "" {
+		return nil, nil
+	}
+	var lvl slog.Level
+	switch strings.ToLower(level) {
+	case "debug":
+		lvl = slog.LevelDebug
+	case "info":
+		lvl = slog.LevelInfo
+	case "warn", "warning":
+		lvl = slog.LevelWarn
+	case "error":
+		lvl = slog.LevelError
+	default:
+		return nil, fmt.Errorf("--log-level: unknown value %q (want debug|info|warn|error)", level)
+	}
+	h := slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: lvl})
+	return slog.New(h), nil
 }
