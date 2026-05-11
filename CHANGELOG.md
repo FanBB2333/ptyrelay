@@ -64,6 +64,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Exclusivity check covers all three transports.
 - `cmd/ptyrelay-mcp`: same via `PTYRELAY_TRANSPORT=exec` +
   `PTYRELAY_EXEC="<argv>"`.
+- `websocket.Options.Reconnect` + `MaxReconnects` +
+  `ReconnectBackoff`: opt-in mid-session reconnect. When the
+  underlying TCP drops the Channel re-Dials, discards any
+  buffered bytes from the dead connection, and signals the
+  pending Read once with the new `websocket.ErrReconnected`
+  sentinel. Subsequent Reads/Writes run against the fresh
+  connection. Reconnect is *not* magic: a new TCP gets a fresh
+  remote process with fresh state, so higher layers that own
+  framing/sentinel state (FramedSession, AgentBackend REPL) must
+  treat `ErrReconnected` as "rebuild from scratch."
 - `websocket.Options.PingInterval` + `PongTimeout`: WebSocket-level
   keepalive. When `PingInterval > 0`, the Channel sends `PingMessage`
   every interval and extends the read deadline on every Pong. Half-open

@@ -497,6 +497,145 @@ func TestChannel_KeepaliveStopsOnClose(t *testing.T) {
 	}
 }
 
+// TestChannel_ReconnectRecoversAfterDrop verifies that with
+// Reconnect=true the Channel re-Dials when the first TCP connection
+// drops, surfaces ErrReconnected to the pending Read exactly once,
+// and then operates normally against the fresh connection.
+func TestChannel_ReconnectRecoversAfterDrop(t *testing.T) {
+	t.Parallel()
+	var connCount atomic.Int32
+	upgrader := gws.Upgrader{}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := connCount.Add(1)
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		if n == 1 {
+			// First connection: write a marker, then yank the socket
+			// out from under the client — simulates a transient TCP
+			// reset / WS server restart.
+			_ = c.WriteMessage(gws.BinaryMessage, []byte("first"))
+			time.Sleep(50 * time.Millisecond)
+			// Force an abnormal close. Sending the close control frame
+			// would land on the io.EOF path, which we don't want here.
+			_ = c.UnderlyingConn().Close()
+			return
+		}
+		// Second and subsequent connections: echo.
+		for {
+			mt, msg, err := c.ReadMessage()
+			if err != nil {
+				return
+			}
+			if err := c.WriteMessage(mt, msg); err != nil {
+				return
+			}
+		}
+	}))
+	defer srv.Close()
+	url := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	ch, err := pwws.Dial(context.Background(), pwws.Options{
+		URL:              url,
+		Reconnect:        true,
+		MaxReconnects:    2,
+		ReconnectBackoff: 50 * time.Millisecond,
+		DialTimeout:      time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ch.Close()
+
+	// Drain the marker from connection #1.
+	first := make([]byte, 5)
+	if _, err := io.ReadFull(ch, first); err != nil {
+		t.Fatalf("read first marker: %v", err)
+	}
+	if string(first) != "first" {
+		t.Fatalf("first marker = %q", first)
+	}
+
+	// The next read should hit the disconnect → reconnect path and
+	// surface ErrReconnected exactly once. We deliberately give it
+	// generous time because the server's 50ms sleep + dial backoff
+	// adds up.
+	deadline := time.Now().Add(3 * time.Second)
+	var reErr error
+	for time.Now().Before(deadline) {
+		buf := make([]byte, 16)
+		_, reErr = ch.Read(buf)
+		if reErr != nil {
+			break
+		}
+	}
+	if !errors.Is(reErr, pwws.ErrReconnected) {
+		t.Fatalf("expected ErrReconnected after drop, got %v", reErr)
+	}
+
+	// Channel is now alive against connection #2; round-trip a payload
+	// to prove it.
+	want := []byte("alive-after-reconnect")
+	if _, err := ch.Write(want); err != nil {
+		t.Fatalf("Write post-reconnect: %v", err)
+	}
+	got := make([]byte, len(want))
+	if _, err := io.ReadFull(ch, got); err != nil {
+		t.Fatalf("ReadFull post-reconnect: %v", err)
+	}
+	if string(got) != string(want) {
+		t.Errorf("post-reconnect roundtrip: got %q want %q", got, want)
+	}
+
+	if c := connCount.Load(); c < 2 {
+		t.Errorf("server saw %d connections; want >= 2", c)
+	}
+}
+
+// TestChannel_ReconnectDisabledByDefault confirms the v0.3.0 behavior
+// — a disconnect surfaces as a terminal error and the channel stays
+// dead — still holds when Reconnect is unset.
+func TestChannel_ReconnectDisabledByDefault(t *testing.T) {
+	t.Parallel()
+	upgrader := gws.Upgrader{}
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			return
+		}
+		once.Do(func() {
+			_ = c.WriteMessage(gws.BinaryMessage, []byte("hi"))
+			time.Sleep(20 * time.Millisecond)
+			_ = c.UnderlyingConn().Close()
+		})
+		_ = c.Close()
+	}))
+	defer srv.Close()
+	url := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	ch, err := pwws.Dial(context.Background(), pwws.Options{URL: url})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ch.Close()
+
+	first := make([]byte, 2)
+	if _, err := io.ReadFull(ch, first); err != nil {
+		t.Fatal(err)
+	}
+	// Next read must surface a terminal error (NOT ErrReconnected).
+	_, err = ch.Read(make([]byte, 16))
+	if errors.Is(err, pwws.ErrReconnected) {
+		t.Errorf("Reconnect=false should not yield ErrReconnected; got %v", err)
+	}
+	if err == nil {
+		t.Errorf("expected disconnect error, got nil")
+	}
+}
+
 func TestChannel_CapsBinarySafe(t *testing.T) {
 	t.Parallel()
 	url, srv := startEcho(t, nil)
