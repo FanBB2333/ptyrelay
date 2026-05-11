@@ -162,12 +162,19 @@ func dial(c *commonFlags) (*connection, error) {
 	}
 
 	if c.doInstall {
-		if c.providerDir == "" {
+		var provider bootstrap.Provider
+		switch {
+		case c.providerDir != "":
+			provider = &bootstrap.FileProvider{Dir: c.providerDir}
+		default:
+			provider = embeddedProvider() // nil unless -tags embedagents
+		}
+		if provider == nil {
 			teardown()
-			return nil, errors.New("--install requires --provider-dir")
+			return nil, errors.New("--install requires --provider-dir (or a binary built with -tags embedagents)")
 		}
 		path, err := bootstrap.Bootstrap(ctx, sb, bootstrap.Options{
-			Provider:    &bootstrap.FileProvider{Dir: c.providerDir},
+			Provider:    provider,
 			InstallPath: c.agentPath,
 		})
 		if err != nil {

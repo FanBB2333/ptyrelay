@@ -1,0 +1,6 @@
+# Only the README is checked in here. The actual agent binaries are
+# populated by `scripts/build-agents.sh` before building with
+# `-tags embedagents`.
+*
+!.gitignore
+!README.md

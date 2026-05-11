@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `EmbedProvider` expect. `--gzip` additionally emits `.gz` siblings
   ready for `--from-url`.
 
+- `cmd/ptyrelay -tags embedagents`: build-tag-gated `//go:embed` of
+  `cmd/ptyrelay/agents/` that wires `bootstrap.EmbedProvider` into the
+  CLI. Default builds stay slim and reject `bootstrap` /  `--install`
+  without `--provider-dir` or `--from-url`. With the tag set, the
+  binary self-contains its agent matrix and can install on a fresh
+  remote with zero side-channels. Workflow:
+  `scripts/build-agents.sh && cp dist/agents/* cmd/ptyrelay/agents/ &&
+  go build -tags embedagents ./cmd/ptyrelay`.
+
 ### Fixed
 - Multi-line shell scripts containing `exit N` no longer kill the
   framed Session. `pkg/bootstrap/fetch.go` runs the inner script in

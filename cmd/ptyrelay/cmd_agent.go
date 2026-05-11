@@ -23,8 +23,9 @@ func cmdBootstrap(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *fromURL == "" && common.providerDir == "" {
-		return fail("bootstrap: --from-url or --provider-dir is required")
+	embedded := embeddedProvider()
+	if *fromURL == "" && common.providerDir == "" && embedded == nil {
+		return fail("bootstrap: --from-url or --provider-dir is required (or rebuild with -tags embedagents)")
 	}
 
 	// Force --no-agent for the dial — we are about to install the agent,
@@ -45,8 +46,12 @@ func cmdBootstrap(args []string) int {
 			u = strings.ReplaceAll(u, "{arch}", arch)
 			return u, sha
 		}
-	} else {
+	} else if common.providerDir != "" {
 		bopts.Provider = &bootstrap.FileProvider{Dir: common.providerDir}
+	} else {
+		// Embedded fallback; only reached when build tag is set,
+		// guarded above so this branch is never nil.
+		bopts.Provider = embedded
 	}
 
 	path, err := bootstrap.Bootstrap(conn.Ctx, conn.Shell, bopts)
