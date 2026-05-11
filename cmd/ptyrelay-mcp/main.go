@@ -124,7 +124,7 @@ func (s *server) handle(req *rpcRequest) (*rpcResponse, bool) {
 	case "initialize":
 		return reply(req.ID, initializeResult{
 			ProtocolVersion: protocolVersion,
-			ServerInfo:      serverInfo{Name: "ptyrelay-mcp", Version: "0.3.0-dev"},
+			ServerInfo:      serverInfo{Name: "ptyrelay-mcp", Version: "0.3.0"},
 			Capabilities:    serverCapabilities{Tools: &emptyObject{}},
 		}), false
 	case "tools/list":

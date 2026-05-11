@@ -31,7 +31,7 @@ const Version = 1
 
 // AgentVersion is the embedded agent build version. Bumped manually on
 // agent releases; surfaced via the ping op.
-const AgentVersion = "0.2.0"
+const AgentVersion = "0.3.0"
 
 // Op identifies a remote operation by name.
 type Op string

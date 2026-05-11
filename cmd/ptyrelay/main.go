@@ -52,7 +52,7 @@ func main() {
 		usage(os.Stdout)
 		os.Exit(0)
 	case "version", "--version":
-		fmt.Println("ptyrelay v0.3.0-dev")
+		fmt.Println("ptyrelay v0.3.0")
 		os.Exit(0)
 	default:
 		fmt.Fprintf(os.Stderr, "ptyrelay: unknown subcommand %q\n\n", sub)

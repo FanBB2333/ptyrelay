@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added (v0.3.0 — in progress)
+## [0.3.0] — 2026-05-11
+
+### Added
 - `pkg/channel/websocket`: generic [channel.Channel] backed by a single
   WebSocket connection (gorilla/websocket). Defaults to "raw bytes in
   binary frames"; ttyd / code-local / wetty-style envelopes are pluggable
@@ -34,7 +36,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Caps cheat sheet, ttyd / generic-bridge / code-local adapter recipes,
   checklist for adding a new Channel).
 
-### Added (v0.2.0)
+## [0.2.0]
+
+### Added
 - `pkg/proto`: agent wire protocol (typed Request/Response, op constants,
   ErrKind taxonomy, length-prefixed and line-delimited codecs).
 - `cmd/ptyrelay-agent`: remote binary supporting one-shot and REPL modes;
@@ -58,7 +62,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Docs: `docs/PROTOCOL.md` (canonical wire spec), `docs/SECURITY.md`
   (threat model + mitigations).
 
-### Added (v0.1.0)
+## [0.1.0]
+
+### Added
 - Project skeleton: directory layout, Go module, lint, editorconfig.
 - Core interfaces (`Channel`, `Session`, `Backend`, `RemoteFS`, `RemoteExec`) with idempotency annotations.
 - Sentinel-framed `Session` with per-shell prelude (bash/zsh/dash) and a Ctrl-C → Ctrl-\ cancellation escalation.
