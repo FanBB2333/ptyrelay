@@ -45,6 +45,19 @@ type Options struct {
 	// DialTimeout caps the upgrade handshake. Default: 10s.
 	DialTimeout time.Duration
 
+	// DialRetries is the number of additional dial attempts after the
+	// first one fails on a transport error (refused connection,
+	// timeout, transient DNS). 0 means "no retry, fail fast".
+	//
+	// HTTP-level rejections (401, 403, 404 on the WS upgrade) are
+	// surfaced immediately without retrying — they indicate a
+	// configuration problem, not a transient failure.
+	DialRetries int
+
+	// DialBackoff is the base wait between retries; each attempt
+	// doubles the previous wait (`backoff << attempt`). 0 means 200ms.
+	DialBackoff time.Duration
+
 	// Encode optionally wraps a Write payload into a frame body and picks
 	// the WebSocket message type. nil means "send the bytes verbatim as a
 	// binary frame". This is the hook that ttyd / code-local adapters use
@@ -84,6 +97,13 @@ type Channel struct {
 
 // Dial opens a WebSocket connection per opts and returns a Channel ready
 // for use. The caller must Close() the returned Channel.
+//
+// When DialRetries > 0, transient transport failures (refused, timeout,
+// transient DNS) trigger up to that many additional attempts with
+// exponential backoff. HTTP-level upgrade failures (4xx/5xx) are
+// surfaced immediately on the first attempt — they indicate
+// configuration, not flakiness, and silent retry would just paper over
+// a real bug.
 func Dial(ctx context.Context, opts Options) (*Channel, error) {
 	if opts.URL == "" {
 		return nil, errors.New("websocket: URL required")
@@ -92,24 +112,57 @@ func Dial(ctx context.Context, opts Options) (*Channel, error) {
 	if timeout <= 0 {
 		timeout = 10 * time.Second
 	}
+	backoff := opts.DialBackoff
+	if backoff <= 0 {
+		backoff = 200 * time.Millisecond
+	}
 	dialer := *gws.DefaultDialer
 	dialer.HandshakeTimeout = timeout
 
-	dctx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	conn, _, err := dialer.DialContext(dctx, opts.URL, opts.Header)
-	if err != nil {
-		return nil, err
+	var lastErr error
+	for attempt := 0; attempt <= opts.DialRetries; attempt++ {
+		dctx, cancel := context.WithTimeout(ctx, timeout)
+		conn, _, err := dialer.DialContext(dctx, opts.URL, opts.Header)
+		cancel()
+		if err == nil {
+			c := &Channel{
+				conn: conn,
+				enc:  opts.Encode,
+				dec:  opts.Decode,
+				rs:   opts.EncodeResize,
+			}
+			c.cond = sync.NewCond(&c.readMu)
+			go c.readPump()
+			return c, nil
+		}
+		lastErr = err
+		if !isRetryableDialError(err) {
+			return nil, err
+		}
+		if attempt == opts.DialRetries {
+			break
+		}
+		wait := backoff << attempt
+		select {
+		case <-time.After(wait):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
 	}
-	c := &Channel{
-		conn: conn,
-		enc:  opts.Encode,
-		dec:  opts.Decode,
-		rs:   opts.EncodeResize,
+	return nil, lastErr
+}
+
+// isRetryableDialError says whether err is the kind of failure that's
+// worth a second attempt. We treat anything from gws.ErrBadHandshake
+// as terminal: the server reached us and rejected the upgrade, so
+// hammering it harder doesn't help.
+func isRetryableDialError(err error) bool {
+	// gorilla returns ErrBadHandshake for HTTP-status upgrade failures
+	// (401/403/404/etc.). Treat the whole error chain as terminal.
+	if errors.Is(err, gws.ErrBadHandshake) {
+		return false
 	}
-	c.cond = sync.NewCond(&c.readMu)
-	go c.readPump()
-	return c, nil
+	return true
 }
 
 // readPump runs until the connection drops or Close is called. It pushes

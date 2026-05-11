@@ -31,6 +31,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a child `sh -c '…'` so non-zero exits propagate as the command's
   exit code instead of taking down the parent bash.
 
+### Added (continued)
+- `websocket.Options.DialRetries` + `DialBackoff`: retry transient
+  transport failures (refused, timeout) with exponential backoff.
+  HTTP-level upgrade failures (4xx/5xx returned via
+  `gws.ErrBadHandshake`) are treated as terminal and surface
+  immediately — silent retry there would mask config bugs.
+
 ## [0.3.0] — 2026-05-11
 
 ### Added

@@ -281,6 +281,78 @@ func TestChannel_CloseIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestChannel_DialRetries_NoopOnHealthy(t *testing.T) {
+	t.Parallel()
+	url, srv := startEcho(t, nil)
+	defer srv.Close()
+
+	// Retries configured but the first attempt succeeds — retry path
+	// must not add latency or extra connections on the happy case.
+	ch, err := pwws.Dial(context.Background(), pwws.Options{
+		URL:         url,
+		DialRetries: 3,
+		DialBackoff: 50 * time.Millisecond,
+	})
+	if err != nil {
+		t.Fatalf("Dial with retries on healthy server: %v", err)
+	}
+	defer ch.Close()
+}
+
+func TestChannel_DialRetries_AllFail(t *testing.T) {
+	t.Parallel()
+	// Pick a port that is almost certainly closed (well above the
+	// dynamic range we'd be unlucky to hit). 3 retries × 50ms = 150ms
+	// of backoff total — well under the test budget.
+	start := time.Now()
+	_, err := pwws.Dial(context.Background(), pwws.Options{
+		URL:         "ws://127.0.0.1:1",
+		DialTimeout: 200 * time.Millisecond,
+		DialRetries: 2,
+		DialBackoff: 50 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected dial failure after exhausting retries")
+	}
+	elapsed := time.Since(start)
+	// At minimum we should see (50ms + 100ms) = 150ms of backoff
+	// across 2 retries, plus the dial attempts themselves.
+	if elapsed < 100*time.Millisecond {
+		t.Errorf("retries appear skipped: elapsed=%v want >=100ms", elapsed)
+	}
+}
+
+func TestChannel_DialRetries_BadHandshakeNoRetry(t *testing.T) {
+	t.Parallel()
+	// Server that completes TCP + HTTP but refuses the WS upgrade
+	// with a 403 — gorilla returns ErrBadHandshake, which we treat
+	// as terminal.
+	calls := 0
+	var mu sync.Mutex
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		w.WriteHeader(http.StatusForbidden)
+	}))
+	defer srv.Close()
+	url := "ws" + strings.TrimPrefix(srv.URL, "http")
+
+	_, err := pwws.Dial(context.Background(), pwws.Options{
+		URL:         url,
+		DialRetries: 5, // would amplify the failure if we retried
+		DialBackoff: 10 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected ErrBadHandshake to fail dial")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Errorf("server saw %d calls; want exactly 1 (no retry on bad handshake)", calls)
+	}
+}
+
 func TestChannel_DialTimeout(t *testing.T) {
 	t.Parallel()
 	// Listener that accepts TCP but never replies — DialContext should
