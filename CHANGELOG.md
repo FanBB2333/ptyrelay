@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   picked per-invocation via `--tmux <pane>` or `--ws <url>`, optional
   `--install` auto-bootstrap, `--no-agent` to force shell-only. Each
   subcommand exits with the remote command's exit code where applicable.
+- `cmd/ptyrelay-mcp`: Model Context Protocol server over stdio JSON-RPC.
+  Hand-rolled (no external SDK) supports `initialize`, `tools/list`,
+  `tools/call`. Exposes `read_file`, `write_file`, `run_command`,
+  `list_dir`, `stat` tools. Transport configured via env (`PTYRELAY_*`),
+  so MCP clients (e.g. Claude Code) only need to launch the binary.
 
 ### Added (v0.2.0)
 - `pkg/proto`: agent wire protocol (typed Request/Response, op constants,
