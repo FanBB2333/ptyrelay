@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `bootstrap.Options.FromURL`: callback that returns `(url, sha256)`
+  for a given `(osName, arch)`. When set, the remote downloads the
+  agent via `curl` / `wget` instead of taking a multi-MB upload from
+  the local side. URLs ending in `.gz` are gunzipped on the remote;
+  empty sha256 disables verification. Falls back to `Provider` when
+  `FromURL` is nil.
+- `cmd/ptyrelay bootstrap`: new flags `--from-url <template>` and
+  `--from-url-sha256 <hex>`. The template supports `{os}` / `{arch}`
+  substitution, so a release layout like
+  `https://host/ptyrelay-agent-{os}-{arch}.gz` covers the whole matrix.
+- `scripts/build-agents.sh`: cross-compile build script that emits
+  the agent for 8 platforms (linux/{amd64,arm64,386,arm},
+  darwin/{amd64,arm64}, freebsd/{amd64,arm64}) into
+  `dist/agents/<os>-<arch>`, the layout `FileProvider` /
+  `EmbedProvider` expect. `--gzip` additionally emits `.gz` siblings
+  ready for `--from-url`.
+
+### Fixed
+- Multi-line shell scripts containing `exit N` no longer kill the
+  framed Session. `pkg/bootstrap/fetch.go` runs the inner script in
+  a child `sh -c '…'` so non-zero exits propagate as the command's
+  exit code instead of taking down the parent bash.
+
 ## [0.3.0] — 2026-05-11
 
 ### Added

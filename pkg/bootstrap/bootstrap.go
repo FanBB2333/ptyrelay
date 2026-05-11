@@ -40,8 +40,20 @@ var ErrUnsupportedTarget = errors.New("bootstrap: unsupported target")
 
 // Options configures [Bootstrap].
 type Options struct {
-	// Provider supplies the agent binary. Required.
+	// Provider supplies the agent binary as bytes the local side then
+	// uploads to the remote via ShellBackend.Write. Required when
+	// FromURL is nil.
 	Provider Provider
+
+	// FromURL, when non-nil, takes precedence over Provider: the
+	// remote fetches the binary directly via curl/wget, skipping the
+	// (slow) multi-MB local→remote upload. The callback receives the
+	// detected (osName, arch) and returns a download URL plus an
+	// optional sha256 hex (empty string disables verification).
+	//
+	// URLs ending in ".gz" are gunzipped on the remote. Requires the
+	// remote to have either curl or wget on PATH.
+	FromURL func(osName, arch string) (url, sha256 string)
 
 	// InstallPath is the absolute path where the binary should land on
 	// the remote. Empty means "$HOME/.local/bin/ptyrelay-agent" — the
@@ -51,19 +63,20 @@ type Options struct {
 
 // Bootstrap installs the agent and returns the absolute path it was
 // written to.
+//
+// Path selection:
+//   - opts.FromURL != nil → remote curl/wget directly to the install
+//     path. Best when the remote has outbound network.
+//   - opts.Provider != nil → local bytes uploaded via ShellBackend.Write.
+//     Best when the remote is air-gapped.
 func Bootstrap(ctx context.Context, sb *shell.Backend, opts Options) (string, error) {
-	if opts.Provider == nil {
-		return "", errors.New("bootstrap: Provider is required")
+	if opts.Provider == nil && opts.FromURL == nil {
+		return "", errors.New("bootstrap: Provider or FromURL is required")
 	}
 
 	osName, arch, err := detectPlatform(ctx, sb)
 	if err != nil {
 		return "", fmt.Errorf("bootstrap: detect platform: %w", err)
-	}
-
-	bin, err := opts.Provider.Get(osName, arch)
-	if err != nil {
-		return "", fmt.Errorf("bootstrap: get %s/%s binary: %w", osName, arch, err)
 	}
 
 	installPath, err := resolveInstallPath(ctx, sb, opts.InstallPath)
@@ -81,10 +94,25 @@ func Bootstrap(ctx context.Context, sb *shell.Backend, opts Options) (string, er
 		}
 	}
 
+	if opts.FromURL != nil {
+		url, sha := opts.FromURL(osName, arch)
+		if url == "" {
+			return "", fmt.Errorf("bootstrap: FromURL returned empty URL for %s/%s",
+				osName, arch)
+		}
+		if err := fetchOnRemote(ctx, sb, url, sha, installPath); err != nil {
+			return "", fmt.Errorf("bootstrap: fetch %s: %w", url, err)
+		}
+		return installPath, nil
+	}
+
+	bin, err := opts.Provider.Get(osName, arch)
+	if err != nil {
+		return "", fmt.Errorf("bootstrap: get %s/%s binary: %w", osName, arch, err)
+	}
 	if err := sb.Write(ctx, installPath, bin, 0o755); err != nil {
 		return "", fmt.Errorf("bootstrap: write agent: %w", err)
 	}
-
 	return installPath, nil
 }
 

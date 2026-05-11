@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/FanBB2333/ptyrelay/pkg/bootstrap"
 )
@@ -13,6 +14,8 @@ func cmdBootstrap(args []string) int {
 	common := &commonFlags{}
 	common.register(fs)
 	verify := fs.Bool("verify", true, "ping the agent after install to confirm it answers")
+	fromURL := fs.String("from-url", "", "URL template; remote fetches via curl/wget. {os}/{arch} are substituted (e.g. https://host/agent-{os}-{arch}.gz)")
+	fromSHA := fs.String("from-url-sha256", "", "expected sha256 hex for the fetched binary; empty disables verification")
 	fs.Usage = func() {
 		fmt.Fprintln(os.Stderr, "Usage: ptyrelay bootstrap [flags]")
 		fs.PrintDefaults()
@@ -20,8 +23,8 @@ func cmdBootstrap(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if common.providerDir == "" {
-		return fail("bootstrap: --provider-dir is required")
+	if *fromURL == "" && common.providerDir == "" {
+		return fail("bootstrap: --from-url or --provider-dir is required")
 	}
 
 	// Force --no-agent for the dial — we are about to install the agent,
@@ -33,10 +36,20 @@ func cmdBootstrap(args []string) int {
 	}
 	defer conn.Close()
 
-	path, err := bootstrap.Bootstrap(conn.Ctx, conn.Shell, bootstrap.Options{
-		Provider:    &bootstrap.FileProvider{Dir: common.providerDir},
-		InstallPath: common.agentPath,
-	})
+	bopts := bootstrap.Options{InstallPath: common.agentPath}
+	if *fromURL != "" {
+		tmpl := *fromURL
+		sha := *fromSHA
+		bopts.FromURL = func(osName, arch string) (string, string) {
+			u := strings.ReplaceAll(tmpl, "{os}", osName)
+			u = strings.ReplaceAll(u, "{arch}", arch)
+			return u, sha
+		}
+	} else {
+		bopts.Provider = &bootstrap.FileProvider{Dir: common.providerDir}
+	}
+
+	path, err := bootstrap.Bootstrap(conn.Ctx, conn.Shell, bopts)
 	if err != nil {
 		return fail("bootstrap: %v", err)
 	}
