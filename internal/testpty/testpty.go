@@ -23,9 +23,11 @@ type PTYChannel struct {
 }
 
 // NewBash starts `bash --noprofile --norc -i` behind a fresh PTY and
-// returns a Channel attached to its master side. t.Skip is called if
-// bash is unavailable.
-func NewBash(t *testing.T) *PTYChannel {
+// returns a Channel attached to its master side. The caller is skipped
+// when bash is unavailable.
+//
+// Accepts testing.TB so both tests and benchmarks can call it.
+func NewBash(t testing.TB) *PTYChannel {
 	t.Helper()
 	bash, err := exec.LookPath("bash")
 	if err != nil {
@@ -38,6 +40,10 @@ func NewBash(t *testing.T) *PTYChannel {
 	}
 	return &PTYChannel{cmd: cmd, ptmx: ptmx}
 }
+
+// NewBashB is an alias for benchmarks; identical to NewBash with the
+// argument typed to *testing.B for ergonomics at call sites.
+func NewBashB(b *testing.B) *PTYChannel { return NewBash(b) }
 
 // Read implements channel.Channel.
 func (c *PTYChannel) Read(b []byte) (int, error) { return c.ptmx.Read(b) }

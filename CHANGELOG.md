@@ -26,6 +26,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `tools/call`. Exposes `read_file`, `write_file`, `run_command`,
   `list_dir`, `stat` tools. Transport configured via env (`PTYRELAY_*`),
   so MCP clients (e.g. Claude Code) only need to launch the binary.
+- `pkg/backend/agent/bench_test.go`: REPL vs one-shot Probe benchmark.
+  On Apple M1 Pro, darwin/arm64: one-shot 157.5 ms/op,
+  REPL 0.555 ms/op — **~283× speedup** for repeated ops. Run with
+  `go test -bench=Probe -run='^$' ./pkg/backend/agent/`.
+- `docs/TRANSPORTS.md`: per-transport notes (tmux vs WebSocket trade-offs,
+  Caps cheat sheet, ttyd / generic-bridge / code-local adapter recipes,
+  checklist for adding a new Channel).
 
 ### Added (v0.2.0)
 - `pkg/proto`: agent wire protocol (typed Request/Response, op constants,
